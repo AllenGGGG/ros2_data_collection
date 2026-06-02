@@ -40,7 +40,7 @@ class EpisodeSession:
         episode_id = self._make_episode_id()
         episode_dir = self.output_dir / episode_id
         recording_dir = episode_dir / 'recording'
-        recording_dir.mkdir(parents=True, exist_ok=False)
+        episode_dir.mkdir(parents=True, exist_ok=False)
 
         self.current_episode = EpisodeInfo(
             episode_id=episode_id,

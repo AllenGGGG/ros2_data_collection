@@ -10,9 +10,15 @@ from data_collection_core.bag_backend import BagBackend
 class BagRosbag2PyBackend(BagBackend):
     """Write serialized ROS messages directly through rosbag2_py using MCAP storage."""
 
-    def __init__(self, storage_config_path: Optional[Path] = None, storage_id: str = 'mcap') -> None:
+    def __init__(
+        self,
+        storage_config_path: Optional[Path] = None,
+        storage_id: str = 'mcap',
+        storage_preset_profile: str = 'zstd_fast',
+    ) -> None:
         self.storage_config_path = storage_config_path
         self.storage_id = storage_id
+        self.storage_preset_profile = storage_preset_profile
         self._writer: Optional[rosbag2_py.SequentialWriter] = None
         self._lock = threading.Lock()
 
@@ -28,6 +34,7 @@ class BagRosbag2PyBackend(BagBackend):
             storage_options = rosbag2_py.StorageOptions(
                 uri=str(recording_dir),
                 storage_id=self.storage_id,
+                storage_preset_profile=self.storage_preset_profile,
             )
             if self.storage_config_path:
                 storage_options.storage_config_uri = str(self.storage_config_path.expanduser().resolve())
@@ -42,6 +49,7 @@ class BagRosbag2PyBackend(BagBackend):
 
             for topic_name, topic_type in topic_types.items():
                 writer.create_topic(rosbag2_py.TopicMetadata(
+                    id=0,
                     name=topic_name,
                     type=topic_type,
                     serialization_format='cdr',
