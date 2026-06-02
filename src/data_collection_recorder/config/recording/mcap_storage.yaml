@@ -1,0 +1,2 @@
+compression: zstd
+compression_level: default

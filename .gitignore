@@ -1,0 +1,19 @@
+# 忽略原始数据集文件夹
+raw_datasets/
+raw_datasets_mcap/
+*.mcap
+build/
+install/
+log/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.DS_Store
+
+# 忽略其他不需要的文件和文件夹
+.locks/
+__pycache__/
+convert2lerobot.py
+multi_subscriber_back_up.py

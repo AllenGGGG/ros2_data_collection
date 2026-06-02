@@ -1,0 +1,35 @@
+default_qos_depth: 10
+topics:
+  - name: /camera_head/color/image_raw
+    type: sensor_msgs/msg/Image
+    qos_depth: 10
+  - name: /camera_left_wrist/color/image_raw
+    type: sensor_msgs/msg/Image
+    qos_depth: 10
+  - name: /camera_right_wrist/color/image_raw
+    type: sensor_msgs/msg/Image
+    qos_depth: 10
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    qos_depth: 200
+  - name: /left_current_pose
+    type: geometry_msgs/msg/PoseStamped
+    qos_depth: 200
+  - name: /right_current_pose
+    type: geometry_msgs/msg/PoseStamped
+    qos_depth: 200
+  - name: /left_current_target
+    type: geometry_msgs/msg/PoseStamped
+    qos_depth: 200
+  - name: /right_current_target
+    type: geometry_msgs/msg/PoseStamped
+    qos_depth: 200
+  - name: /left_gripper_controller/target_command
+    type: std_msgs/msg/Int32
+    qos_depth: 10
+  - name: /right_gripper_controller/target_command
+    type: std_msgs/msg/Int32
+    qos_depth: 10
+  - name: /xr/controller_state
+    type: std_msgs/msg/Int32
+    qos_depth: 10
