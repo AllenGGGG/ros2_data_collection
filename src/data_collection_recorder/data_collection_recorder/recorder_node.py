@@ -52,7 +52,7 @@ class McapRecorderNode(Node):
         self.declare_parameter('storage_config_path', '')
         self.declare_parameter('control_topic', DEFAULT_CONTROL_TOPIC)
         self.declare_parameter('storage_id', 'mcap')
-        self.declare_parameter('storage_preset_profile', 'zstd_fast')
+        self.declare_parameter('storage_preset_profile', 'none')
 
         self.output_dir = Path(self.get_parameter('output_dir').value)
         self.control_topic = str(self.get_parameter('control_topic').value)
@@ -89,7 +89,9 @@ class McapRecorderNode(Node):
         configured = str(self.get_parameter('storage_config_path').value)
         if configured:
             return Path(configured).expanduser().resolve()
-        return None
+        share_dir = Path(get_package_share_directory('data_collection_recorder'))
+        default_path = share_dir / 'config' / 'recording' / 'mcap_storage.yaml'
+        return default_path if default_path.exists() else None
 
     def _create_topic_subscriptions(self) -> None:
         for topic in self.profile.topics:
