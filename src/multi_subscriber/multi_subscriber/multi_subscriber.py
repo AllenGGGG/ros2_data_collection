@@ -10,7 +10,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.qos import QoSProfile
-from sensor_msgs.msg import Image, JointState
+from sensor_msgs.msg import CompressedImage, Image, JointState
 from geometry_msgs.msg import Pose, PoseStamped
 from std_msgs.msg import Int32
 from cv_bridge import CvBridge
@@ -64,7 +64,9 @@ class MultiTopicSubscriber(Node):
         }
         self.preview_max_width = 480
         self.declare_parameter('enable_preview', False)
+        self.declare_parameter('use_compressed_images', False)
         self.enable_preview = self.get_parameter('enable_preview').value
+        self.use_compressed_images = self.get_parameter('use_compressed_images').value
         self.preview_windows_initialized = set()
         self.preview_thread_warning_logged = False
 
@@ -82,25 +84,36 @@ class MultiTopicSubscriber(Node):
         self.high_freq_qos = QoSProfile(depth=200)
 
         # 订阅多个话题
+        if self.use_compressed_images:
+            camera_msg_type = CompressedImage
+            head_topic = '/camera_head/color/image_raw/compressed'
+            left_topic = '/camera_left_wrist/color/image_raw/compressed'
+            right_topic = '/camera_right_wrist/color/image_raw/compressed'
+        else:
+            camera_msg_type = Image
+            head_topic = '/camera_head/color/image_raw'
+            left_topic = '/camera_left_wrist/color/image_raw'
+            right_topic = '/camera_right_wrist/color/image_raw'
+
         self.camera_head_subscription = self.create_subscription(
-            Image,
-            '/camera_head/color/image_raw',
+            camera_msg_type,
+            head_topic,
             self.camera_head_callback,
             10,
             callback_group=self.image_callback_group
         )
 
         self.camera_left_wrist_subscription = self.create_subscription(
-            Image,
-            '/camera_left_wrist/color/image_raw',
+            camera_msg_type,
+            left_topic,
             self.camera_left_wrist_callback,
             10,
             callback_group=self.image_callback_group
         )
 
         self.camera_right_wrist_subscription = self.create_subscription(
-            Image,
-            '/camera_right_wrist/color/image_raw',
+            camera_msg_type,
+            right_topic,
             self.camera_right_wrist_callback,
             10,
             callback_group=self.image_callback_group
@@ -353,8 +366,11 @@ class MultiTopicSubscriber(Node):
         if not self.recording_active:
             return
         try:
-            # 将ROS图像消息转换为OpenCV图像
-            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            # 将ROS图像消息转换为OpenCV图像（支持 raw Image 和 CompressedImage）
+            if isinstance(msg, CompressedImage):
+                cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            else:
+                cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             # 获取当前时间戳
             timestamp = self.get_time_string()
 
@@ -790,7 +806,8 @@ def main(args=None):
         node.get_logger().info(
             "Node initialized; recording start/stop is controlled only by "
             f"/xr/controller_state={START_RECORDING_CODE}/{STOP_RECORDING_CODE}; "
-            f"{INFERENCE_RESUMED_CODE}/{INFERENCE_PAUSED_CODE} only annotate inference/intervention while recording."
+            f"{INFERENCE_RESUMED_CODE}/{INFERENCE_PAUSED_CODE} only annotate inference/intervention while recording. "
+            f"use_compressed_images={node.use_compressed_images}"
         )
         executor.spin()
     except KeyboardInterrupt:

@@ -102,6 +102,18 @@ ros2 run multi_subscriber multi_topic_subscriber
 
 它会把三路相机写成 PNG，并把关节、EE、夹爪、intervention 写成 CSV。后续 MCAP 路径验证稳定后，可以逐步下线 legacy 路径。
 
+Yerba 相机对比实验可切换为订阅 `CompressedImage`：
+
+```bash
+ros2 run multi_subscriber multi_topic_subscriber --ros-args -p use_compressed_images:=true
+```
+
+启用后会改为订阅：
+
+- `/camera_head/color/image_raw/compressed`
+- `/camera_left_wrist/color/image_raw/compressed`
+- `/camera_right_wrist/color/image_raw/compressed`
+
 ## `multi_subscriber_sim_real.py`
 
 `multi_subscriber_sim_real.py` 是旧的 sim-real 同采脚本，目前未与 MCAP recorder 对齐。后续建议把 sim 相机 topic 合并进 recording profile，而不是继续维护一套独立落盘逻辑。
