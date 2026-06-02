@@ -14,23 +14,18 @@ topics:
   - name: /joint_states
     type: sensor_msgs/msg/JointState
     qos_depth: 200
-    record_max_hz: 50
   - name: /left_current_pose
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
-    record_max_hz: 50
   - name: /right_current_pose
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
-    record_max_hz: 50
   - name: /left_current_target
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
-    record_max_hz: 50
   - name: /right_current_target
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
-    record_max_hz: 50
   - name: /left_gripper_controller/target_command
     type: std_msgs/msg/Int32
     qos_depth: 10

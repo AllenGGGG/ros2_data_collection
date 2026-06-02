@@ -9,6 +9,7 @@ def generate_launch_description():
     profile_path = LaunchConfiguration('profile_path')
     storage_config_path = LaunchConfiguration('storage_config_path')
     storage_preset_profile = LaunchConfiguration('storage_preset_profile')
+    writer_queue_size = LaunchConfiguration('writer_queue_size')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -31,6 +32,11 @@ def generate_launch_description():
             default_value='zstd_small',
             description='MCAP preset: zstd_small (smaller, slower) recommended for raw images.',
         ),
+        DeclareLaunchArgument(
+            'writer_queue_size',
+            default_value='0',
+            description='Serialized message queue size for the writer thread. 0 means unbounded.',
+        ),
         Node(
             package='data_collection_recorder',
             executable='mcap_recorder',
@@ -41,6 +47,7 @@ def generate_launch_description():
                 'profile_path': profile_path,
                 'storage_config_path': storage_config_path,
                 'storage_preset_profile': storage_preset_profile,
+                'writer_queue_size': writer_queue_size,
             }],
         ),
     ])
