@@ -23,13 +23,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'storage_config_path',
-            default_value='/home/zihang/ros2_data_collection_YWL/src/data_collection_recorder/config/recording/mcap_storage.yaml',
-            description='Optional rosbag2 MCAP storage config YAML.',
+            default_value='',
+            description='Optional MCAP writer YAML. Empty = use package mcap_storage.yaml if present.',
         ),
         DeclareLaunchArgument(
             'storage_preset_profile',
-            default_value='none',
-            description='MCAP storage preset profile: none, fastwrite, zstd_fast, or zstd_small.',
+            default_value='zstd_small',
+            description='MCAP preset: zstd_small (smaller, slower) recommended for raw images.',
         ),
         Node(
             package='data_collection_recorder',

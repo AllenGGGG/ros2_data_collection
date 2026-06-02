@@ -52,7 +52,7 @@ class EpisodeSession:
             episode_dir=episode_dir,
             episode_id=episode_id,
             storage_format='mcap',
-            compression='zstd',
+            compression='zstd_small',
             timestamp_ns=timestamp_ns,
         )
         return self.current_episode

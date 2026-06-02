@@ -70,6 +70,28 @@ ros2 launch data_collection_recorder mcap_recorder.launch.py \
 ros2 bag info /home/zihang/ros2_ws/raw_datasets_mcap/<episode_id>/recording
 ```
 
+### 体积说明（重要）
+
+- 默认 profile 录的是 **`sensor_msgs/Image` 原始 BGR8**（1280×720 约 **0.9MB/帧**）。MCAP 的 zstd **对真实画面几乎压不动**，10 秒三路相机约 **500MB～800MB** 是正常现象，不是 bag 坏了。
+- 旧版 **PNG 落盘**相当于每帧做了 JPEG/PNG 编码，所以同样时长可能只有 **~400MB**。
+- 要明显变小请二选一：
+  1. 使用 JPEG 话题 profile（需相机发布 `CompressedImage`）：
+
+```bash
+ros2 launch data_collection_recorder mcap_recorder.launch.py \
+  profile_path:=$(ros2 pkg prefix data_collection_recorder)/share/data_collection_recorder/config/recording/default_profile_compressed.yaml \
+  storage_preset_profile:=zstd_small
+```
+
+  2. 保持 raw 但用更强 MCAP preset（默认已是 `zstd_small`）：
+
+```bash
+ros2 launch data_collection_recorder mcap_recorder.launch.py storage_preset_profile:=zstd_small
+```
+
+- Launch 里 **`storage_preset_profile:=none` 会几乎不压缩**，勿用。
+- 启动后日志会打印首帧图像大小；若看到 `storage_preset_profile=none` 请改 launch 参数。
+
 ## legacy 录制路径
 
 旧版入口仍然保留：

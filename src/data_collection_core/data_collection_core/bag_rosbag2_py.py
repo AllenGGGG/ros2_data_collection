@@ -14,7 +14,7 @@ class BagRosbag2PyBackend(BagBackend):
         self,
         storage_config_path: Optional[Path] = None,
         storage_id: str = 'mcap',
-        storage_preset_profile: str = 'zstd_fast',
+        storage_preset_profile: str = 'zstd_small',
     ) -> None:
         self.storage_config_path = storage_config_path
         self.storage_id = storage_id
@@ -36,8 +36,9 @@ class BagRosbag2PyBackend(BagBackend):
                 storage_id=self.storage_id,
                 storage_preset_profile=self.storage_preset_profile,
             )
-            if self.storage_config_path:
-                storage_options.storage_config_uri = str(self.storage_config_path.expanduser().resolve())
+            config_path = self._resolved_storage_config_path()
+            if config_path is not None:
+                storage_options.storage_config_uri = str(config_path)
 
             converter_options = rosbag2_py.ConverterOptions(
                 input_serialization_format='cdr',
@@ -69,3 +70,9 @@ class BagRosbag2PyBackend(BagBackend):
                 return
             # rosbag2_py closes the storage when the writer object is destroyed.
             self._writer = None
+
+    def _resolved_storage_config_path(self) -> Optional[Path]:
+        if not self.storage_config_path:
+            return None
+        resolved = self.storage_config_path.expanduser().resolve()
+        return resolved if resolved.is_file() else None

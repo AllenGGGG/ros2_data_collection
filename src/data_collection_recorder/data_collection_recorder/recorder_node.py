@@ -52,7 +52,7 @@ class McapRecorderNode(Node):
         self.declare_parameter('storage_config_path', '')
         self.declare_parameter('control_topic', DEFAULT_CONTROL_TOPIC)
         self.declare_parameter('storage_id', 'mcap')
-        self.declare_parameter('storage_preset_profile', 'none')
+        self.declare_parameter('storage_preset_profile', 'zstd_small')
 
         self.output_dir = Path(self.get_parameter('output_dir').value)
         self.control_topic = str(self.get_parameter('control_topic').value)
@@ -70,6 +70,9 @@ class McapRecorderNode(Node):
         self.data_callback_group = ReentrantCallbackGroup()
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
         self._topic_subscriptions = []
+        self._last_record_ns: dict[str, int] = {}
+        self._last_control_code_written: Optional[int] = None
+        self._logged_image_payload = False
         self._create_topic_subscriptions()
 
         self.get_logger().info(
@@ -86,12 +89,17 @@ class McapRecorderNode(Node):
         return share_dir / 'config' / 'recording' / 'default_profile.yaml'
 
     def _resolve_storage_config_path(self) -> Optional[Path]:
-        configured = str(self.get_parameter('storage_config_path').value)
+        configured = str(self.get_parameter('storage_config_path').value).strip()
         if configured:
-            return Path(configured).expanduser().resolve()
+            candidate = Path(configured).expanduser().resolve()
+            if candidate.is_file():
+                return candidate
+            self.get_logger().warn(
+                f'storage_config_path not found ({candidate}); falling back to package default'
+            )
         share_dir = Path(get_package_share_directory('data_collection_recorder'))
         default_path = share_dir / 'config' / 'recording' / 'mcap_storage.yaml'
-        return default_path if default_path.exists() else None
+        return default_path if default_path.is_file() else None
 
     def _create_topic_subscriptions(self) -> None:
         for topic in self.profile.topics:
@@ -122,29 +130,49 @@ class McapRecorderNode(Node):
 
             if not self.session.is_recording:
                 return
+            if not self._should_record_topic(topic, stamp_ns):
+                return
             self._write_message(topic.name, msg, stamp_ns)
 
         return callback
+
+    def _should_record_topic(self, topic: TopicSpec, timestamp_ns: int) -> bool:
+        if topic.record_max_hz <= 0:
+            return True
+        min_interval_ns = int(1_000_000_000 / topic.record_max_hz)
+        last_ns = self._last_record_ns.get(topic.name)
+        if last_ns is not None and (timestamp_ns - last_ns) < min_interval_ns:
+            return False
+        self._last_record_ns[topic.name] = timestamp_ns
+        return True
 
     def _handle_control_message(self, msg: Any, timestamp_ns: int) -> None:
         code = int(getattr(msg, 'data'))
 
         if code == START_RECORDING_CODE:
             self._start_recording(timestamp_ns)
-            self._write_message(self.control_topic, msg, timestamp_ns)
+            self._write_control_to_bag(msg, timestamp_ns, code)
         elif code == STOP_RECORDING_CODE:
-            self._write_message(self.control_topic, msg, timestamp_ns)
+            self._write_control_to_bag(msg, timestamp_ns, code)
             self._stop_recording(timestamp_ns)
         elif code == INFERENCE_PAUSED_CODE:
             if self.session.start_intervention(code=code, timestamp_ns=timestamp_ns):
                 self.get_logger().info('Intervention started; recording continues')
-            self._write_message(self.control_topic, msg, timestamp_ns)
+            self._write_control_to_bag(msg, timestamp_ns, code)
         elif code == INFERENCE_RESUMED_CODE:
             if self.session.end_intervention(code=code, timestamp_ns=timestamp_ns):
                 self.get_logger().info('Intervention ended; recording continues')
-            self._write_message(self.control_topic, msg, timestamp_ns)
+            self._write_control_to_bag(msg, timestamp_ns, code)
         else:
-            self._write_message(self.control_topic, msg, timestamp_ns)
+            self._write_control_to_bag(msg, timestamp_ns, code)
+
+    def _write_control_to_bag(self, msg: Any, timestamp_ns: int, code: int) -> None:
+        if not self.session.is_recording:
+            return
+        if self._last_control_code_written == code:
+            return
+        self._last_control_code_written = code
+        self._write_message(self.control_topic, msg, timestamp_ns)
 
     def _start_recording(self, timestamp_ns: int) -> None:
         if self.session.is_recording:
@@ -152,12 +180,23 @@ class McapRecorderNode(Node):
             return
 
         try:
+            self._last_record_ns.clear()
+            self._last_control_code_written = None
+            self._logged_image_payload = False
             episode = self.session.start(timestamp_ns=timestamp_ns)
             self.backend.start(
                 recording_dir=episode.recording_dir,
                 topic_types=self.profile.type_map(),
             )
-            self.get_logger().info(f'MCAP recording started: {episode.episode_dir}')
+            preset = str(self.get_parameter('storage_preset_profile').value)
+            self.get_logger().info(
+                f'MCAP recording started: {episode.episode_dir} '
+                f'(storage_preset_profile={preset}, storage_config={self.storage_config_path})'
+            )
+            if preset == 'none' and self.storage_config_path is None:
+                self.get_logger().warn(
+                    'Recording with no MCAP compression preset; expect very large bags for raw Image topics'
+                )
         except Exception as exc:
             self.session.mark_error(str(exc))
             if self.session.is_recording:
@@ -184,7 +223,17 @@ class McapRecorderNode(Node):
         if not self.backend.active:
             return
         try:
-            self.backend.write_serialized(topic_name, serialize_message(msg), timestamp_ns)
+            payload = serialize_message(msg)
+            if not self._logged_image_payload and (
+                topic_name.endswith('/image_raw') or topic_name.endswith('/compressed')
+            ):
+                self._logged_image_payload = True
+                self.get_logger().info(
+                    f'First image payload on {topic_name}: {len(payload) / 1e6:.2f} MB per frame. '
+                    'Raw Image + MCAP zstd is much larger than legacy PNG; use '
+                    'profile_path:=.../default_profile_compressed.yaml if JPEG topics exist.'
+                )
+            self.backend.write_serialized(topic_name, payload, timestamp_ns)
         except Exception as exc:
             self.get_logger().error(f'Failed to write message for {topic_name}: {exc}')
 

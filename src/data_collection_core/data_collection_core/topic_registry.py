@@ -10,6 +10,8 @@ class TopicSpec:
     name: str
     type: str
     qos_depth: int = 10
+    # Max write rate to the bag (Hz). 0 means no limit. Does not affect subscription rate.
+    record_max_hz: float = 0.0
 
 
 class TopicProfile:
@@ -32,6 +34,7 @@ class TopicProfile:
                 name=raw_topic['name'],
                 type=raw_topic['type'],
                 qos_depth=int(raw_topic.get('qos_depth', raw_profile.get('default_qos_depth', 10))),
+                record_max_hz=float(raw_topic.get('record_max_hz', 0.0)),
             ))
         return cls(topics)
 
