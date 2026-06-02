@@ -6,7 +6,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     output_dir = LaunchConfiguration('output_dir')
-    profile_path = LaunchConfiguration('profile_path')compressed
+    profile_path = LaunchConfiguration('profile_path')
     storage_config_path = LaunchConfiguration('storage_config_path')
     storage_preset_profile = LaunchConfiguration('storage_preset_profile')
 
