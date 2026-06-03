@@ -67,6 +67,7 @@ class McapRecorderNode(Node):
             storage_preset_profile=str(self.get_parameter('storage_preset_profile').value),
         )
 
+        self.joint_callback_group = ReentrantCallbackGroup()
         self.data_callback_group = ReentrantCallbackGroup()
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
         self._topic_subscriptions = []
@@ -104,11 +105,12 @@ class McapRecorderNode(Node):
     def _create_topic_subscriptions(self) -> None:
         for topic in self.profile.topics:
             msg_type = import_message_class(topic.type)
-            callback_group = (
-                self.control_callback_group
-                if topic.name == self.control_topic
-                else self.data_callback_group
-            )
+            if topic.name == self.control_topic:
+                callback_group = self.control_callback_group
+            elif topic.name == '/joint_states':
+                callback_group = self.joint_callback_group
+            else:
+                callback_group = self.data_callback_group
             subscription = self.create_subscription(
                 msg_type,
                 topic.name,
@@ -248,7 +250,7 @@ class McapRecorderNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = McapRecorderNode()
-    executor = MultiThreadedExecutor(num_threads=4)
+    executor = MultiThreadedExecutor(num_threads=8)
     executor.add_node(node)
 
     try:
