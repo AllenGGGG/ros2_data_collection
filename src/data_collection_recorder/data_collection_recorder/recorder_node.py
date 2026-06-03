@@ -20,7 +20,7 @@ from data_collection_core.constants import (
     STATE_RECORD_TOPICS,
     STOP_RECORDING_CODE,
 )
-from data_collection_core.session import EpisodeSession
+from data_collection_core.session import EpisodeInfo, EpisodeSession
 from data_collection_core.topic_registry import TopicProfile, TopicSpec
 
 
@@ -192,10 +192,7 @@ class McapRecorderNode(Node):
                 topic_types=self.profile.type_map(),
             )
             preset = str(self.get_parameter('storage_preset_profile').value)
-            self.get_logger().info(
-                f'MCAP recording started: {episode.episode_dir} '
-                f'(storage_preset_profile={preset}, storage_config={self.storage_config_path})'
-            )
+            self._log_recording_started(episode, storage_preset_profile=preset)
             if preset == 'none' and self.storage_config_path is None:
                 self.get_logger().warn(
                     'Recording with no MCAP compression preset; expect very large bags for raw Image topics'
@@ -215,12 +212,59 @@ class McapRecorderNode(Node):
             self.backend.stop()
             episode = self.session.stop(timestamp_ns=timestamp_ns)
             if episode:
-                self.get_logger().info(f'MCAP recording stopped: {episode.episode_dir}')
+                self._log_recording_stopped(episode, status='completed')
         except Exception as exc:
             self.session.mark_error(str(exc))
             self.backend.stop()
-            self.session.stop(timestamp_ns=timestamp_ns, status='error')
+            episode = self.session.stop(timestamp_ns=timestamp_ns, status='error')
+            if episode:
+                self._log_recording_stopped(episode, status='error')
             self.get_logger().error(f'Failed to stop MCAP recording cleanly: {exc}')
+
+    def _log_recording_started(self, episode: EpisodeInfo, storage_preset_profile: str) -> None:
+        episode_dir = episode.episode_dir.resolve()
+        recording_dir = episode.recording_dir.resolve()
+        metadata_path = episode_dir / 'metadata.json'
+        banner = '=' * 72
+        lines = [
+            banner,
+            '>>> 开始采集 (MCAP) <<<',
+            f'Episode ID : {episode.episode_id}',
+            f'数据根目录 : {episode_dir}',
+            f'MCAP 落盘  : {recording_dir}',
+            f'元数据文件 : {metadata_path}',
+            f'压缩预设   : {storage_preset_profile}',
+            banner,
+        ]
+        for line in lines:
+            self.get_logger().info(line)
+            print(line, flush=True)
+
+    def _log_recording_stopped(self, episode: EpisodeInfo, status: str) -> None:
+        episode_dir = episode.episode_dir.resolve()
+        recording_dir = episode.recording_dir.resolve()
+        metadata_path = episode_dir / 'metadata.json'
+        mcap_files = sorted(recording_dir.glob('*.mcap')) if recording_dir.is_dir() else []
+        mcap_summary = (
+            ', '.join(f'{path.name} ({path.stat().st_size / 1e6:.1f} MB)' for path in mcap_files)
+            if mcap_files
+            else '(暂无 .mcap 文件，请检查是否正常停录)'
+        )
+        banner = '=' * 72
+        lines = [
+            banner,
+            '>>> 结束采集 (MCAP) <<<',
+            f'状态       : {status}',
+            f'Episode ID : {episode.episode_id}',
+            f'数据根目录 : {episode_dir}',
+            f'MCAP 落盘  : {recording_dir}',
+            f'元数据文件 : {metadata_path}',
+            f'MCAP 文件  : {mcap_summary}',
+            banner,
+        ]
+        for line in lines:
+            self.get_logger().info(line)
+            print(line, flush=True)
 
     def _write_message(self, topic_name: str, msg: Any, timestamp_ns: int) -> None:
         if not self.backend.active:
