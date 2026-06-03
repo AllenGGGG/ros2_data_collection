@@ -28,11 +28,11 @@ topics:
   - name: /left_current_target
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
-    record_max_hz: 50
+    record_max_hz: 100
   - name: /right_current_target
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
-    record_max_hz: 50
+    record_max_hz: 100
   - name: /left_gripper_controller/target_command
     type: std_msgs/msg/Int32
     qos_depth: 10
