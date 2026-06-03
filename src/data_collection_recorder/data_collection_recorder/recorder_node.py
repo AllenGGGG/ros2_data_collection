@@ -20,6 +20,8 @@ from data_collection_core.constants import (
 from data_collection_core.session import EpisodeInfo, EpisodeSession
 from data_collection_core.topic_registry import TopicProfile
 
+DEFAULT_OUTPUT_DIR = '~/ros2_ws/raw_datasets_mcap'
+
 
 def message_timestamp_ns(msg: Any, fallback_ns: int) -> int:
     header = getattr(msg, 'header', None)
@@ -35,17 +37,17 @@ class McapRecorderNode(Node):
     def __init__(self) -> None:
         super().__init__('mcap_recorder')
 
-        self.declare_parameter('output_dir', '~/ros2_ws/raw_datasets_mcap')
+        self.declare_parameter('output_dir', '')
         self.declare_parameter('profile_path', '')
         self.declare_parameter('control_topic', DEFAULT_CONTROL_TOPIC)
         self.declare_parameter('storage_id', 'mcap')
         self.declare_parameter('storage_preset_profile', 'zstd_small')
 
-        self.output_dir = Path(self.get_parameter('output_dir').value)
         self.control_topic = str(self.get_parameter('control_topic').value)
         self.profile_path = self._resolve_profile_path()
 
         self.profile = TopicProfile.from_yaml(self.profile_path)
+        self.output_dir = self._resolve_output_dir()
         self.session = EpisodeSession(self.output_dir)
         self.backend = BagRos2CliBackend(
             topic_names=[topic.name for topic in self.profile.topics],
@@ -68,6 +70,14 @@ class McapRecorderNode(Node):
             return Path(configured).expanduser().resolve()
         share_dir = Path(get_package_share_directory('data_collection_recorder'))
         return share_dir / 'config' / 'recording' / 'default_profile.yaml'
+
+    def _resolve_output_dir(self) -> Path:
+        configured = str(self.get_parameter('output_dir').value).strip()
+        if configured:
+            return Path(configured)
+        if self.profile.output_dir:
+            return Path(self.profile.output_dir)
+        return Path(DEFAULT_OUTPUT_DIR)
 
     def _create_control_subscription(self) -> None:
         self.create_subscription(
@@ -139,16 +149,14 @@ class McapRecorderNode(Node):
         episode_dir = episode.episode_dir.resolve()
         recording_dir = episode.recording_dir.resolve()
         metadata_path = episode_dir / 'metadata.json'
-        banner = '=' * 72
         lines = [
-            banner,
-            '>>> 开始采集 (ros2 bag record / MCAP) <<<',
+            *self._banner_lines('>>>  开 始 采 集  <<<'),
             f'Episode ID : {episode.episode_id}',
             f'数据根目录 : {episode_dir}',
             f'MCAP 落盘  : {recording_dir}',
             f'元数据文件 : {metadata_path}',
             f'压缩预设   : {storage_preset_profile}',
-            banner,
+            '#' * 72,
         ]
         for line in lines:
             self.get_logger().info(line)
@@ -164,21 +172,31 @@ class McapRecorderNode(Node):
             if mcap_files
             else '(暂无 .mcap 文件，请检查是否正常停录)'
         )
-        banner = '=' * 72
         lines = [
-            banner,
-            '>>> 结束采集 (ros2 bag record / MCAP) <<<',
+            *self._banner_lines('>>>  结 束 采 集  <<<'),
             f'状态       : {status}',
             f'Episode ID : {episode.episode_id}',
             f'数据根目录 : {episode_dir}',
             f'MCAP 落盘  : {recording_dir}',
             f'元数据文件 : {metadata_path}',
             f'MCAP 文件  : {mcap_summary}',
-            banner,
+            '#' * 72,
         ]
         for line in lines:
             self.get_logger().info(line)
             print(line, flush=True)
+
+    @staticmethod
+    def _banner_lines(title: str) -> list[str]:
+        width = 72
+        return [
+            '#' * width,
+            '#  ' + ' ' * (width - 6) + '  #',
+            '#  ' + title.center(width - 6) + '  #',
+            '#  ' + 'ros2 bag record  |  MCAP  |  zstd_small'.center(width - 6) + '  #',
+            '#  ' + ' ' * (width - 6) + '  #',
+            '#' * width,
+        ]
 
     def destroy_node(self) -> bool:
         if self.session.is_recording:

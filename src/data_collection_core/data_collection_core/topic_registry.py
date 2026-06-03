@@ -17,8 +17,9 @@ class TopicSpec:
 
 
 class TopicProfile:
-    def __init__(self, topics: Iterable[TopicSpec]) -> None:
+    def __init__(self, topics: Iterable[TopicSpec], output_dir: Optional[str] = None) -> None:
         self.topics: List[TopicSpec] = list(topics)
+        self.output_dir = output_dir
 
     @classmethod
     def from_yaml(cls, path: Path) -> 'TopicProfile':
@@ -46,7 +47,8 @@ class TopicProfile:
                 qos_depth=int(raw_topic.get('qos_depth', raw_profile.get('default_qos_depth', 10))),
                 record_max_hz=record_max_hz,
             ))
-        return cls(topics)
+        output_dir = raw_profile.get('output_dir')
+        return cls(topics, output_dir=str(output_dir) if output_dir else None)
 
     def type_map(self) -> Dict[str, str]:
         return {topic.name: topic.type for topic in self.topics}

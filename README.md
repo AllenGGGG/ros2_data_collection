@@ -40,6 +40,12 @@ src/data_collection_recorder/config/recording/default_profile.yaml
 └── recording/
 ```
 
+输出目录默认来自 profile YAML 顶层字段：
+
+```yaml
+output_dir: ~/ros2_ws/raw_datasets_mcap
+```
+
 ## 运行 MCAP recorder
 
 先确认安装了 MCAP storage 插件：
@@ -63,6 +69,8 @@ ros2 launch data_collection_recorder mcap_recorder.launch.py
 ros2 launch data_collection_recorder mcap_recorder.launch.py \
   output_dir:=/home/zihang/ros2_ws/raw_datasets_mcap
 ```
+
+路径优先级为：`launch output_dir` > `profile YAML output_dir` > 内置默认值。
 
 等价的原生命令形式为：
 

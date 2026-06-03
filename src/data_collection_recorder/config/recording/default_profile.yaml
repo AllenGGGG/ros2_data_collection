@@ -1,3 +1,4 @@
+output_dir: ~/ros2_ws/raw_datasets_mcap
 default_qos_depth: 10
 
 topics:

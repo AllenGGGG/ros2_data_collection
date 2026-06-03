@@ -12,8 +12,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'output_dir',
-            default_value='~/ros2_ws/raw_datasets_mcap',
-            description='Directory where episode folders will be created.',
+            default_value='',
+            description='Override output directory. Empty = use profile YAML output_dir.',
         ),
         DeclareLaunchArgument(
             'profile_path',
