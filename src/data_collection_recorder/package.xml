@@ -3,7 +3,7 @@
 <package format="3">
   <name>data_collection_recorder</name>
   <version>0.1.0</version>
-  <description>ROS 2 recorder node that writes data collection episodes as MCAP bags.</description>
+  <description>ROS 2 recorder node that controls native ros2 bag MCAP recording.</description>
   <maintainer email="zihang@todo.todo">zihang</maintainer>
   <license>TODO</license>
 
@@ -12,6 +12,7 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
   <exec_depend>rosbag2_py</exec_depend>
   <exec_depend>rosbag2_storage_mcap</exec_depend>
   <exec_depend>std_msgs</exec_depend>

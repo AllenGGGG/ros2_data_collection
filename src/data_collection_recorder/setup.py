@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='zihang',
     maintainer_email='zihang@todo.todo',
-    description='ROS 2 recorder node that writes data collection episodes as MCAP bags.',
+    description='ROS 2 recorder node that controls native ros2 bag MCAP recording.',
     license='TODO',
     tests_require=['pytest'],
     entry_points={

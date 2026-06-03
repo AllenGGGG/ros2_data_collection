@@ -12,7 +12,7 @@
 
 | 路径 | 入口 | 说明 |
 | --- | --- | --- |
-| MCAP 新路径 | `data_collection_recorder/mcap_recorder` | 推荐方向：`rosbag2_py` 直接写 MCAP |
+| MCAP 新路径 | `data_collection_recorder/mcap_recorder` | 控制节点启动原生 `ros2 bag record -s mcap` 全频录制 |
 | legacy 路径 | `multi_subscriber/multi_topic_subscriber` | 旧版 PNG + CSV 落盘，作为 fallback 保留 |
 
 ## MCAP 录制路径
@@ -21,8 +21,8 @@ MCAP recorder 由 `/xr/controller_state` 控制：
 
 | 控制码 | 行为 |
 | --- | --- |
-| `13` | 开始录制，创建 episode 目录并打开 MCAP writer |
-| `14` | 停止录制，关闭 MCAP writer |
+| `13` | 开始录制，创建 episode 目录并启动 `ros2 bag record` |
+| `14` | 停止录制，向 `ros2 bag record` 发送 `SIGINT` 并等待写完 metadata |
 | `15` | 记录 `intervention_end`，录制不中断 |
 | `16` | 记录 `intervention_start`，录制不中断 |
 
@@ -64,18 +64,37 @@ ros2 launch data_collection_recorder mcap_recorder.launch.py \
   output_dir:=/home/zihang/ros2_ws/raw_datasets_mcap
 ```
 
+等价的原生命令形式为：
+
+```bash
+ros2 bag record \
+  -s mcap \
+  --storage-preset-profile zstd_small \
+  /camera_head/color/image_raw/compressed \
+  /camera_left_wrist/color/image_raw/compressed \
+  /camera_right_wrist/color/image_raw/compressed \
+  /joint_states \
+  /left_current_pose \
+  /right_current_pose \
+  /left_current_target \
+  /right_current_target \
+  /left_gripper_controller/target_command \
+  /right_gripper_controller/target_command \
+  /xr/controller_state \
+  -o ~/ros2_bags/recording_$(date +%Y%m%d_%H%M%S)
+```
+
 采完后检查：
 
 ```bash
 ros2 bag info /home/zihang/ros2_ws/raw_datasets_mcap/<episode_id>/recording
 ```
 
-### 体积说明（重要）
+### 录制说明（重要）
 
-- 默认 profile 录的是 **`sensor_msgs/Image` 原始 BGR8**（1280×720 约 **0.9MB/帧**）。MCAP 的 zstd **对真实画面几乎压不动**，10 秒三路相机约 **500MB～800MB** 是正常现象，不是 bag 坏了。
-- 旧版 **PNG 落盘**相当于每帧做了 JPEG/PNG 编码，所以同样时长可能只有 **~400MB**。
-- 要明显变小请二选一：
-  1. 使用 JPEG 话题 profile（需相机发布 `CompressedImage`）：
+- 当前默认 profile 使用三路 `sensor_msgs/msg/CompressedImage`，不再由 Python 回调转写每条消息。
+- `record_max_hz` / `state_record_max_hz` 不再生效；原生 `ros2 bag record` 会按 topic 实际发布频率全频录制。
+- 要明显减小体积，优先录相机的 `/compressed` 话题，并保持 MCAP preset 为 `zstd_small`：
 
 ```bash
 ros2 launch data_collection_recorder mcap_recorder.launch.py \
@@ -83,14 +102,7 @@ ros2 launch data_collection_recorder mcap_recorder.launch.py \
   storage_preset_profile:=zstd_small
 ```
 
-  2. 保持 raw 但用更强 MCAP preset（默认已是 `zstd_small`）：
-
-```bash
-ros2 launch data_collection_recorder mcap_recorder.launch.py storage_preset_profile:=zstd_small
-```
-
 - Launch 里 **`storage_preset_profile:=none` 会几乎不压缩**，勿用。
-- 启动后日志会打印首帧图像大小；若看到 `storage_preset_profile=none` 请改 launch 参数。
 
 ## legacy 录制路径
 
