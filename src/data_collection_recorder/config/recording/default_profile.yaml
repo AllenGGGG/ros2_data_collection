@@ -1,7 +1,7 @@
 default_qos_depth: 10
 topics:
-  # Raw BGR8 images (~900KB/frame at 1280x720). MCAP zstd cannot match PNG size; use
-  # default_profile_compressed.yaml if your stack publishes sensor_msgs/CompressedImage.
+  # Prefer JPEG/CompressedImage camera topics. Raw Image topics create much larger MCAP
+  # files and can starve high-rate small topics such as /joint_states.
   - name: /camera_head/color/image_raw/compressed
     type: sensor_msgs/msg/CompressedImage
     qos_depth: 10

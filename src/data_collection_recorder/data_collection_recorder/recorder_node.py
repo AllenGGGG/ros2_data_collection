@@ -228,13 +228,13 @@ class McapRecorderNode(Node):
         try:
             payload = serialize_message(msg)
             if not self._logged_image_payload and (
-                topic_name.endswith('/image_raw') or topic_name.endswith('/compressed')
+                topic_name.endswith('/compressed') or topic_name.endswith('/image_raw')
             ):
                 self._logged_image_payload = True
                 self.get_logger().info(
                     f'First image payload on {topic_name}: {len(payload) / 1e6:.2f} MB per frame. '
-                    'Raw Image + MCAP zstd is much larger than legacy PNG; use '
-                    'profile_path:=.../default_profile_compressed.yaml if JPEG topics exist.'
+                    'CompressedImage topics are preferred when available; raw Image topics create '
+                    'much larger MCAP files even with zstd.'
                 )
             self.backend.write_serialized(topic_name, payload, timestamp_ns)
         except Exception as exc:
