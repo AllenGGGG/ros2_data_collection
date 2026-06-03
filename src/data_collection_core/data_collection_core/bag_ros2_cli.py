@@ -40,25 +40,35 @@ class BagRos2CliBackend(BagBackend):
     def write_serialized(self, topic: str, serialized_msg: bytes, timestamp_ns: int) -> None:
         del topic, serialized_msg, timestamp_ns
 
-    def stop(self) -> None:
+    def detach_process(self) -> Optional[subprocess.Popen]:
+        """Release the live record subprocess for background finalization."""
         process = self._process
-        if process is None:
-            return
+        self._process = None
+        return process
 
+    def stop(self) -> None:
+        process = self.detach_process()
+        if process is not None:
+            self.finalize_record_process(process, self.stop_timeout_sec)
+
+    @staticmethod
+    def finalize_record_process(
+        process: subprocess.Popen,
+        stop_timeout_sec: float = 30.0,
+    ) -> None:
+        """Send SIGINT to ros2 bag record and wait until the MCAP is flushed."""
+        if process.poll() is not None:
+            return
+        process.send_signal(signal.SIGINT)
         try:
-            if process.poll() is None:
-                process.send_signal(signal.SIGINT)
-                try:
-                    process.wait(timeout=self.stop_timeout_sec)
-                except subprocess.TimeoutExpired:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5.0)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=5.0)
-        finally:
-            self._process = None
+            process.wait(timeout=stop_timeout_sec)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5.0)
 
     def _record_command(self, recording_dir: Path) -> list[str]:
         command = [
