@@ -1,4 +1,9 @@
 default_qos_depth: 10
+
+# 机械臂状态话题（joint + 左右末端位姿）发布常为 ~500Hz，落盘目标频率统一在此配置。
+# 设为 0 表示不限频全录；单话题可用 record_max_hz 覆盖。
+state_record_max_hz: 100
+
 topics:
   # 默认使用 CompressedImage（Yerba JPEG 话题）进行采集。
   # 如需切回 raw Image，请将 topic 改为 /image_raw 并把 type 改为 sensor_msgs/msg/Image。
@@ -14,15 +19,12 @@ topics:
   - name: /joint_states
     type: sensor_msgs/msg/JointState
     qos_depth: 200
-    record_max_hz: 0
   - name: /left_current_pose
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
-    record_max_hz: 50
   - name: /right_current_pose
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
-    record_max_hz: 50
   - name: /left_current_target
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200

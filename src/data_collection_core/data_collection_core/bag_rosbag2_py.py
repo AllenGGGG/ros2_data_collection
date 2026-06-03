@@ -7,12 +7,12 @@ from typing import Dict, Optional, Tuple
 import rosbag2_py
 
 from data_collection_core.bag_backend import BagBackend
+from data_collection_core.constants import STATE_RECORD_TOPICS
 
-JOINT_STATES_TOPIC = '/joint_states'
 _STOP = object()
 
 # Lower number = higher priority in the write queue.
-_PRIORITY_JOINT = 0
+_PRIORITY_STATE = 0
 _PRIORITY_DEFAULT = 1
 
 
@@ -27,7 +27,7 @@ class BagRosbag2PyBackend(BagBackend):
     """Write serialized ROS messages through rosbag2_py using MCAP storage.
 
     A dedicated writer thread drains a priority queue so subscription callbacks
-    return quickly. Joint states are prioritized over other topics when the
+    return quickly.     Arm state topics (joint + EE poses) are prioritized over cameras when the
     queue backs up.
     """
 
@@ -97,7 +97,7 @@ class BagRosbag2PyBackend(BagBackend):
     def write_serialized(self, topic: str, serialized_msg: bytes, timestamp_ns: int) -> None:
         if not self._accept_writes:
             return
-        priority = _PRIORITY_JOINT if topic == JOINT_STATES_TOPIC else _PRIORITY_DEFAULT
+        priority = _PRIORITY_STATE if topic in STATE_RECORD_TOPICS else _PRIORITY_DEFAULT
         with self._enqueue_lock:
             self._enqueue_seq += 1
             seq = self._enqueue_seq
@@ -114,7 +114,7 @@ class BagRosbag2PyBackend(BagBackend):
             with self._enqueue_lock:
                 self._enqueue_seq += 1
                 stop_seq = self._enqueue_seq
-            self._write_queue.put((_PRIORITY_JOINT, stop_seq, _STOP))
+            self._write_queue.put((_PRIORITY_STATE, stop_seq, _STOP))
             worker.join(timeout=120.0)
         self._worker = None
         with self._writer_lock:

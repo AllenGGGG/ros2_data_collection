@@ -6,3 +6,10 @@ INFERENCE_PAUSED_CODE = 16
 DEFAULT_CONTROL_TOPIC = '/xr/controller_state'
 DEFAULT_PROFILE_PATH = 'config/recording/default_profile.yaml'
 DEFAULT_STORAGE_CONFIG_PATH = 'config/recording/mcap_storage.yaml'
+
+# High-rate arm state topics; default record_max_hz comes from profile state_record_max_hz.
+STATE_RECORD_TOPICS = frozenset({
+    '/joint_states',
+    '/left_current_pose',
+    '/right_current_pose',
+})

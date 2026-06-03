@@ -17,6 +17,7 @@ from data_collection_core.constants import (
     INFERENCE_PAUSED_CODE,
     INFERENCE_RESUMED_CODE,
     START_RECORDING_CODE,
+    STATE_RECORD_TOPICS,
     STOP_RECORDING_CODE,
 )
 from data_collection_core.session import EpisodeSession
@@ -67,7 +68,7 @@ class McapRecorderNode(Node):
             storage_preset_profile=str(self.get_parameter('storage_preset_profile').value),
         )
 
-        self.joint_callback_group = ReentrantCallbackGroup()
+        self.state_callback_group = ReentrantCallbackGroup()
         self.data_callback_group = ReentrantCallbackGroup()
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
         self._topic_subscriptions = []
@@ -107,8 +108,8 @@ class McapRecorderNode(Node):
             msg_type = import_message_class(topic.type)
             if topic.name == self.control_topic:
                 callback_group = self.control_callback_group
-            elif topic.name == '/joint_states':
-                callback_group = self.joint_callback_group
+            elif topic.name in STATE_RECORD_TOPICS:
+                callback_group = self.state_callback_group
             else:
                 callback_group = self.data_callback_group
             subscription = self.create_subscription(
