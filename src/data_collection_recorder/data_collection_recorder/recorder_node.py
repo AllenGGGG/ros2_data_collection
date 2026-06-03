@@ -22,6 +22,14 @@ from data_collection_core.topic_registry import TopicProfile
 
 DEFAULT_OUTPUT_DIR = '~/ros2_ws/raw_datasets_mcap'
 
+_TERMINAL_WIDTH = 72
+_ANSI_RESET = '\033[0m'
+_ANSI_BOLD_GREEN = '\033[1;92m'
+_ANSI_BOLD_CYAN = '\033[1;96m'
+_ANSI_BOLD_YELLOW = '\033[1;93m'
+_ANSI_BOLD_RED = '\033[1;91m'
+_ANSI_BOLD_WHITE = '\033[1;97m'
+
 
 def message_timestamp_ns(msg: Any, fallback_ns: int) -> int:
     header = getattr(msg, 'header', None)
@@ -56,6 +64,7 @@ class McapRecorderNode(Node):
         )
 
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
+        self._saving_in_progress = False
         self._create_control_subscription()
 
         self.get_logger().info(
@@ -105,8 +114,14 @@ class McapRecorderNode(Node):
                 self.get_logger().info('Intervention ended; recording continues')
 
     def _start_recording(self, timestamp_ns: int) -> None:
+        if self._saving_in_progress:
+            self._emit_terminal_notice(
+                '上一段数据仍在落盘保存中，请等待「保存完成」提示后再开始下一轮采集。',
+                level='warn',
+            )
+            return
         if self.session.is_recording:
-            self.get_logger().info('Recording already active; ignoring start request')
+            self._emit_terminal_notice('当前已在采集中，忽略重复的开始指令。', level='warn')
             return
 
         try:
@@ -129,38 +144,88 @@ class McapRecorderNode(Node):
 
     def _stop_recording(self, timestamp_ns: int) -> None:
         if not self.session.is_recording:
-            self.get_logger().info('Recording not active; ignoring stop request')
+            self._emit_terminal_notice('当前未在采集，忽略结束指令。', level='warn')
             return
 
+        self._saving_in_progress = True
         try:
+            self._log_saving_in_progress()
             self.backend.stop()
             episode = self.session.stop(timestamp_ns=timestamp_ns)
             if episode:
+                self._log_saving_complete()
                 self._log_recording_stopped(episode, status='completed')
         except Exception as exc:
             self.session.mark_error(str(exc))
-            self.backend.stop()
+            try:
+                self.backend.stop()
+            except Exception:
+                pass
             episode = self.session.stop(timestamp_ns=timestamp_ns, status='error')
             if episode:
+                self._log_saving_complete(success=False)
                 self._log_recording_stopped(episode, status='error')
             self.get_logger().error(f'Failed to stop MCAP recording cleanly: {exc}')
+        finally:
+            self._saving_in_progress = False
 
     def _log_recording_started(self, episode: EpisodeInfo, storage_preset_profile: str) -> None:
         episode_dir = episode.episode_dir.resolve()
         recording_dir = episode.recording_dir.resolve()
         metadata_path = episode_dir / 'metadata.json'
         lines = [
-            *self._banner_lines('>>>  开 始 采 集  <<<'),
-            f'Episode ID : {episode.episode_id}',
-            f'数据根目录 : {episode_dir}',
-            f'MCAP 落盘  : {recording_dir}',
-            f'元数据文件 : {metadata_path}',
-            f'压缩预设   : {storage_preset_profile}',
-            '#' * 72,
+            '',
+            *self._boxed_banner('★  开 始 采 集  ★', fill_char='='),
+            '  采集员：本轮采集已开始，数据正在写入。',
+            f'  Episode ID : {episode.episode_id}',
+            f'  数据根目录   : {episode_dir}',
+            f'  MCAP 落盘    : {recording_dir}',
+            f'  元数据文件   : {metadata_path}',
+            f'  压缩预设     : {storage_preset_profile}',
+            '  结束本轮请点击「结束采集」(控制器 14)。',
+            '=' * _TERMINAL_WIDTH,
+            '',
         ]
-        for line in lines:
-            self.get_logger().info(line)
-            print(line, flush=True)
+        self._print_terminal_block(lines, color=_ANSI_BOLD_GREEN)
+
+    def _log_saving_in_progress(self) -> None:
+        lines = [
+            '',
+            *self._boxed_banner('⏳  正 在 保 存  请 稍 候  ⏳', fill_char='*'),
+            '  采集员注意：',
+            '  · 已收到「结束采集」，正在将 MCAP 落盘并关闭录制进程',
+            '  · 请勿关闭终端，勿再次点击结束采集',
+            '  · 请勿开始下一轮采集，直到出现「保存完成」提示',
+            '  · 大文件可能需要数十秒，请耐心等待',
+            '*' * _TERMINAL_WIDTH,
+            '',
+        ]
+        self._print_terminal_block(lines, color=_ANSI_BOLD_YELLOW)
+
+    def _log_saving_complete(self, success: bool = True) -> None:
+        if success:
+            title = '✓  保 存 完 成  可 开 始 下 一 轮  ✓'
+            hints = [
+                '  采集员：上一段数据已落盘完成。',
+                '  · 现在可以开始下一轮采集（控制器 13）',
+                '  · 请确认上方路径中已有 MCAP 文件',
+            ]
+            color = _ANSI_BOLD_GREEN
+        else:
+            title = '✗  保 存 异 常  请 检 查 日 志  ✗'
+            hints = [
+                '  采集员：停录过程出现异常，请查看日志后再决定是否重采。',
+                '  · 勿在未确认前开始下一轮采集',
+            ]
+            color = _ANSI_BOLD_RED
+        lines = [
+            '',
+            *self._boxed_banner(title, fill_char='='),
+            *hints,
+            '=' * _TERMINAL_WIDTH,
+            '',
+        ]
+        self._print_terminal_block(lines, color=color)
 
     def _log_recording_stopped(self, episode: EpisodeInfo, status: str) -> None:
         episode_dir = episode.episode_dir.resolve()
@@ -173,29 +238,44 @@ class McapRecorderNode(Node):
             else '(暂无 .mcap 文件，请检查是否正常停录)'
         )
         lines = [
-            *self._banner_lines('>>>  结 束 采 集  <<<'),
-            f'状态       : {status}',
-            f'Episode ID : {episode.episode_id}',
-            f'数据根目录 : {episode_dir}',
-            f'MCAP 落盘  : {recording_dir}',
-            f'元数据文件 : {metadata_path}',
-            f'MCAP 文件  : {mcap_summary}',
-            '#' * 72,
+            '',
+            *self._boxed_banner('■  本 轮 采 集 已 结 束  ■', fill_char='-'),
+            f'  状态         : {status}',
+            f'  Episode ID   : {episode.episode_id}',
+            f'  数据根目录     : {episode_dir}',
+            f'  MCAP 落盘      : {recording_dir}',
+            f'  元数据文件     : {metadata_path}',
+            f'  MCAP 文件      : {mcap_summary}',
+            '-' * _TERMINAL_WIDTH,
+            '',
         ]
+        self._print_terminal_block(lines, color=_ANSI_BOLD_CYAN)
+
+    def _emit_terminal_notice(self, message: str, level: str = 'info') -> None:
+        prefix = {'info': '[提示]', 'warn': '[注意]'}.get(level, '[提示]')
+        color = _ANSI_BOLD_YELLOW if level == 'warn' else _ANSI_BOLD_WHITE
+        line = f'{prefix} {message}'
+        self.get_logger().warn(message) if level == 'warn' else self.get_logger().info(message)
+        print(f'{color}{line}{_ANSI_RESET}', flush=True)
+
+    def _print_terminal_block(self, lines: list[str], color: str = '') -> None:
         for line in lines:
-            self.get_logger().info(line)
-            print(line, flush=True)
+            if line.strip():
+                self.get_logger().info(line)
+            if color and line.strip():
+                print(f'{color}{line}{_ANSI_RESET}', flush=True)
+            else:
+                print(line, flush=True)
 
     @staticmethod
-    def _banner_lines(title: str) -> list[str]:
-        width = 72
+    def _boxed_banner(title: str, fill_char: str = '#') -> list[str]:
+        width = _TERMINAL_WIDTH
+        inner = width - 4
+        border = fill_char * width
         return [
-            '#' * width,
-            '#  ' + ' ' * (width - 6) + '  #',
-            '#  ' + title.center(width - 6) + '  #',
-            '#  ' + 'ros2 bag record  |  MCAP  |  zstd_small'.center(width - 6) + '  #',
-            '#  ' + ' ' * (width - 6) + '  #',
-            '#' * width,
+            border,
+            f'{fill_char} {title.center(inner)} {fill_char}',
+            border,
         ]
 
     def destroy_node(self) -> bool:
