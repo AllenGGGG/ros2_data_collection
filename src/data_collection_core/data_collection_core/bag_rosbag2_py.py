@@ -1,22 +1,10 @@
-from dataclasses import dataclass
-from pathlib import Path
-from queue import Queue
 import threading
-from typing import Dict, Optional, Union
-
-from data_collection_core.bag_backend import BagBackend
+from pathlib import Path
+from typing import Dict, Optional
 
 import rosbag2_py
 
-
-@dataclass(frozen=True)
-class _QueuedWrite:
-    topic: str
-    serialized_msg: bytes
-    timestamp_ns: int
-
-
-_STOP = object()
+from data_collection_core.bag_backend import BagBackend
 
 
 class BagRosbag2PyBackend(BagBackend):
@@ -27,23 +15,16 @@ class BagRosbag2PyBackend(BagBackend):
         storage_config_path: Optional[Path] = None,
         storage_id: str = 'mcap',
         storage_preset_profile: str = 'zstd_small',
-        max_queue_size: int = 0,
     ) -> None:
         self.storage_config_path = storage_config_path
         self.storage_id = storage_id
         self.storage_preset_profile = storage_preset_profile
-        self.max_queue_size = max_queue_size
         self._writer: Optional[rosbag2_py.SequentialWriter] = None
-        self._write_queue: Optional[Queue[Union[_QueuedWrite, object]]] = None
-        self._worker: Optional[threading.Thread] = None
-        self._accepting_writes = False
-        self._worker_error: Optional[BaseException] = None
         self._lock = threading.Lock()
 
     @property
     def active(self) -> bool:
-        with self._lock:
-            return self._writer is not None and self._accepting_writes
+        return self._writer is not None
 
     def start(self, recording_dir: Path, topic_types: Dict[str, str]) -> None:
         with self._lock:
@@ -76,63 +57,19 @@ class BagRosbag2PyBackend(BagBackend):
                 ))
 
             self._writer = writer
-            self._write_queue = Queue(maxsize=max(0, self.max_queue_size))
-            self._worker_error = None
-            self._accepting_writes = True
-            self._worker = threading.Thread(
-                target=self._write_worker,
-                name='rosbag2-mcap-writer',
-                daemon=False,
-            )
-            self._worker.start()
 
     def write_serialized(self, topic: str, serialized_msg: bytes, timestamp_ns: int) -> None:
         with self._lock:
-            if self._worker_error is not None:
-                raise RuntimeError('Bag writer worker failed') from self._worker_error
-            if self._writer is None or self._write_queue is None or not self._accepting_writes:
+            if self._writer is None:
                 return
-            write_queue = self._write_queue
-        write_queue.put(_QueuedWrite(topic, serialized_msg, timestamp_ns))
+            self._writer.write(topic, serialized_msg, timestamp_ns)
 
     def stop(self) -> None:
         with self._lock:
-            if self._writer is None or self._write_queue is None:
+            if self._writer is None:
                 return
-            self._accepting_writes = False
-            write_queue = self._write_queue
-            worker = self._worker
-
-        write_queue.put(_STOP)
-        if worker is not None:
-            worker.join()
-
-        with self._lock:
-            worker_error = self._worker_error
+            # rosbag2_py closes the storage when the writer object is destroyed.
             self._writer = None
-            self._write_queue = None
-            self._worker = None
-            self._worker_error = None
-
-        if worker_error is not None:
-            raise RuntimeError('Bag writer worker failed') from worker_error
-
-    def _write_worker(self) -> None:
-        while True:
-            assert self._write_queue is not None
-            item = self._write_queue.get()
-            try:
-                if item is _STOP:
-                    return
-                assert isinstance(item, _QueuedWrite)
-                assert self._writer is not None
-                self._writer.write(item.topic, item.serialized_msg, item.timestamp_ns)
-            except BaseException as exc:
-                with self._lock:
-                    self._worker_error = exc
-                return
-            finally:
-                self._write_queue.task_done()
 
     def _resolved_storage_config_path(self) -> Optional[Path]:
         if not self.storage_config_path:

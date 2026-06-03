@@ -1,7 +1,7 @@
 default_qos_depth: 10
 topics:
-  # Prefer JPEG/CompressedImage camera topics. Raw Image topics create much larger MCAP
-  # files and can starve high-rate small topics such as /joint_states.
+  # 默认使用 CompressedImage（Yerba JPEG 话题）进行采集。
+  # 如需切回 raw Image，请将 topic 改为 /image_raw 并把 type 改为 sensor_msgs/msg/Image。
   - name: /camera_head/color/image_raw/compressed
     type: sensor_msgs/msg/CompressedImage
     qos_depth: 10
@@ -14,18 +14,23 @@ topics:
   - name: /joint_states
     type: sensor_msgs/msg/JointState
     qos_depth: 200
+    record_max_hz: 50
   - name: /left_current_pose
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
+    record_max_hz: 50
   - name: /right_current_pose
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
+    record_max_hz: 50
   - name: /left_current_target
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
+    record_max_hz: 50
   - name: /right_current_target
     type: geometry_msgs/msg/PoseStamped
     qos_depth: 200
+    record_max_hz: 50
   - name: /left_gripper_controller/target_command
     type: std_msgs/msg/Int32
     qos_depth: 10

@@ -79,7 +79,7 @@ ros2 bag info /home/zihang/ros2_ws/raw_datasets_mcap/<episode_id>/recording
 
 ```bash
 ros2 launch data_collection_recorder mcap_recorder.launch.py \
-  profile_path:=$(ros2 pkg prefix data_collection_recorder)/share/data_collection_recorder/config/recording/default_profile_compressed.yaml \
+  profile_path:=$(ros2 pkg prefix data_collection_recorder)/share/data_collection_recorder/config/recording/default_profile.yaml \
   storage_preset_profile:=zstd_small
 ```
 

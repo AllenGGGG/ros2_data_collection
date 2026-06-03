@@ -1,6 +1,6 @@
 # Optional MCAP writer tuning. Keys must match rosbag2_storage_mcap (capital Z in Zstd).
 # Note: zstd on raw camera frames barely shrinks; prefer storage_preset_profile:=zstd_small
-# and/or default_profile_compressed.yaml (JPEG topics).
+# and/or default_profile.yaml (JPEG topics).
 compression: Zstd
 compressionLevel: Slowest
 forceCompression: true

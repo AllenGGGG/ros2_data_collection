@@ -53,7 +53,6 @@ class McapRecorderNode(Node):
         self.declare_parameter('control_topic', DEFAULT_CONTROL_TOPIC)
         self.declare_parameter('storage_id', 'mcap')
         self.declare_parameter('storage_preset_profile', 'zstd_small')
-        self.declare_parameter('writer_queue_size', 0)
 
         self.output_dir = Path(self.get_parameter('output_dir').value)
         self.control_topic = str(self.get_parameter('control_topic').value)
@@ -66,7 +65,6 @@ class McapRecorderNode(Node):
             storage_config_path=self.storage_config_path,
             storage_id=str(self.get_parameter('storage_id').value),
             storage_preset_profile=str(self.get_parameter('storage_preset_profile').value),
-            max_queue_size=int(self.get_parameter('writer_queue_size').value),
         )
 
         self.data_callback_group = ReentrantCallbackGroup()
@@ -80,8 +78,7 @@ class McapRecorderNode(Node):
         self.get_logger().info(
             f'MCAP recorder ready; output_dir={self.output_dir.expanduser()}, '
             f'profile={self.profile_path}, storage_config={self.storage_config_path}, '
-            f'storage_preset_profile={self.get_parameter("storage_preset_profile").value}, '
-            f'writer_queue_size={self.get_parameter("writer_queue_size").value}'
+            f'storage_preset_profile={self.get_parameter("storage_preset_profile").value}'
         )
 
     def _resolve_profile_path(self) -> Path:
@@ -228,13 +225,13 @@ class McapRecorderNode(Node):
         try:
             payload = serialize_message(msg)
             if not self._logged_image_payload and (
-                topic_name.endswith('/compressed') or topic_name.endswith('/image_raw')
+                topic_name.endswith('/image_raw') or topic_name.endswith('/compressed')
             ):
                 self._logged_image_payload = True
                 self.get_logger().info(
                     f'First image payload on {topic_name}: {len(payload) / 1e6:.2f} MB per frame. '
-                    'CompressedImage topics are preferred when available; raw Image topics create '
-                    'much larger MCAP files even with zstd.'
+                    'Raw Image + MCAP zstd is much larger than legacy PNG; use '
+                    'profile_path:=.../default_profile.yaml if JPEG topics exist.'
                 )
             self.backend.write_serialized(topic_name, payload, timestamp_ns)
         except Exception as exc:
