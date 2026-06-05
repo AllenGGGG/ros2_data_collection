@@ -1,0 +1,25 @@
+# Matrix 220 扫码器有线网口（eno1）
+# 安装: sudo cp 02-eno1-matrix220.yaml /etc/netplan/
+#       sudo netplan apply
+network:
+  version: 2
+  renderer: NetworkManager
+  ethernets:
+    eno1:
+      match:
+        name: eno1
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - 192.168.10.10/24
+      # 网线未插时不阻塞开机
+      optional: true
+      networkmanager:
+        name: eno1-matrix220
+        passthrough:
+          connection.autoconnect: "true"
+          connection.autoconnect-priority: "100"
+          connection.id: "eno1-matrix220"
+          # 扫码器网段不需要默认网关，避免影响 WiFi 上网
+          ipv4.never-default: "true"
+          ipv6.method: "ignore"

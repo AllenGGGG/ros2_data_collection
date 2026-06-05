@@ -5,17 +5,20 @@ from typing import Any, Optional
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
-from std_msgs.msg import Int32
-
+from std_msgs.msg import Empty, Float32MultiArray, Int32
 from data_collection_core.bag_ros2_cli import BagRos2CliBackend
+from data_collection_core.episode_uploader import EpisodeUploader
+from data_collection_core.upload_config import UploadConfig, load_upload_config
 from data_collection_core.constants import (
     DEFAULT_CONTROL_TOPIC,
     INFERENCE_PAUSED_CODE,
     INFERENCE_RESUMED_CODE,
+    RECORD_STOP_TOPIC,
+    SCAN_SUCCESS_TOPIC,
     START_RECORDING_CODE,
     STOP_RECORDING_CODE,
 )
@@ -37,6 +40,13 @@ _BG_GREEN = '\033[42;30m'
 _BG_YELLOW = '\033[43;30m'
 _BG_CYAN = '\033[46;30m'
 _BG_RED = '\033[41;97m'
+
+
+def scan_success_is_active(msg: Float32MultiArray) -> bool:
+    """True when /scan/success represents a successful scan (all dims >= 0.5)."""
+    if not msg.data:
+        return False
+    return all(value >= 0.5 for value in msg.data)
 
 
 def message_timestamp_ns(msg: Any, fallback_ns: int) -> int:
@@ -97,20 +107,32 @@ class McapRecorderNode(Node):
         self._active_backend: Optional[BagRos2CliBackend] = None
         self._save_threads: list[threading.Thread] = []
         self._save_threads_lock = threading.Lock()
+        self._uploader: Optional[EpisodeUploader] = None
+        self._upload_config: Optional[UploadConfig] = None
+        self._scan_success_is_active = False
 
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
+        self.scan_callback_group = ReentrantCallbackGroup()
+        self._record_stop_publisher = self.create_publisher(Empty, RECORD_STOP_TOPIC, 10)
         self._create_control_subscription()
+        self._create_scan_subscription()
+        self._init_uploader()
 
         self.get_logger().debug(
             f'mcap_recorder ready output_dir={self.output_dir} profile={self.profile_path}'
         )
+        ready_lines = [
+            f'📂 保存目录：{self.output_dir.expanduser()}',
+            '🎮 开始采集 → 控制器 13',
+            '🛑 结束采集 → 控制器 14 或 /scan/success 变 0',
+        ]
+        if self._uploader is not None:
+            ready_lines.append(
+                f'☁️  落盘后将自动上传 → {self._upload_config.user}@{self._upload_config.host}'
+            )
         _collector_card(
             '📡  数采程序已就绪',
-            [
-                f'📂 保存目录：{self.output_dir.expanduser()}',
-                '🎮 开始采集 → 控制器 13',
-                '🛑 结束采集 → 控制器 14',
-            ],
+            ready_lines,
             headline_bg=_BG_CYAN,
             body_color=_BLUE,
         )
@@ -121,6 +143,31 @@ class McapRecorderNode(Node):
             return Path(configured).expanduser().resolve()
         share_dir = Path(get_package_share_directory('data_collection_recorder'))
         return share_dir / 'config' / 'recording' / 'default_profile.yaml'
+
+    def _resolve_upload_config_path(self) -> Path:
+        share_dir = Path(get_package_share_directory('data_collection_recorder'))
+        return share_dir / 'config' / 'recording' / 'upload.yaml'
+
+    def _init_uploader(self) -> None:
+        try:
+            config_path = self._resolve_upload_config_path()
+            config = load_upload_config(config_path)
+            if not config.enabled:
+                self.get_logger().info('Episode upload disabled in upload.yaml')
+                return
+            self._upload_config = config
+            self._uploader = EpisodeUploader(
+                config=config,
+                output_dir=self.output_dir,
+                on_finished=self._on_upload_finished,
+            )
+            self._uploader.start()
+        except Exception as exc:
+            self._uploader = None
+            self._upload_config = None
+            self.get_logger().warn(
+                f'Episode upload disabled due to config error (recording unaffected): {exc}'
+            )
 
     def _resolve_output_dir(self) -> Path:
         configured = str(self.get_parameter('output_dir').value).strip()
@@ -146,6 +193,34 @@ class McapRecorderNode(Node):
             callback_group=self.control_callback_group,
         )
 
+    def _create_scan_subscription(self) -> None:
+        self.create_subscription(
+            Float32MultiArray,
+            SCAN_SUCCESS_TOPIC,
+            self._handle_scan_success,
+            QoSProfile(depth=10),
+            callback_group=self.scan_callback_group,
+        )
+        self.get_logger().info(
+            f'Bound stop recording to {SCAN_SUCCESS_TOPIC} 1->0 while recording'
+        )
+
+    def _publish_record_stop_signal(self) -> None:
+        self._record_stop_publisher.publish(Empty())
+
+    def _handle_scan_success(self, msg: Float32MultiArray) -> None:
+        is_active = scan_success_is_active(msg)
+        was_active = self._scan_success_is_active
+        self._scan_success_is_active = is_active
+        if not self.session.is_recording:
+            return
+        if was_active and not is_active:
+            timestamp_ns = self.get_clock().now().nanoseconds
+            self.get_logger().info(
+                f'{SCAN_SUCCESS_TOPIC} 1->0 while recording; stopping episode'
+            )
+            self._stop_recording(timestamp_ns, source='scan_success')
+
     def _handle_control_message(self, msg: Any) -> None:
         timestamp_ns = message_timestamp_ns(msg, self.get_clock().now().nanoseconds)
         code = int(getattr(msg, 'data'))
@@ -153,7 +228,7 @@ class McapRecorderNode(Node):
         if code == START_RECORDING_CODE:
             self._start_recording(timestamp_ns)
         elif code == STOP_RECORDING_CODE:
-            self._stop_recording(timestamp_ns)
+            self._stop_recording(timestamp_ns, source='controller_14')
         elif code == INFERENCE_PAUSED_CODE:
             self.session.start_intervention(code=code, timestamp_ns=timestamp_ns)
         elif code == INFERENCE_RESUMED_CODE:
@@ -189,10 +264,14 @@ class McapRecorderNode(Node):
             self.get_logger().error(f'Failed to start MCAP recording: {exc}')
             self._collector_warn(f'❌  开始采集失败：{exc}')
 
-    def _stop_recording(self, timestamp_ns: int) -> None:
+    def _stop_recording(self, timestamp_ns: int, *, source: str = 'controller') -> None:
         if not self.session.is_recording:
-            self._collector_warn('⚠️  当前没有在采集，无需按结束')
+            if source != 'scan_success':
+                self._collector_warn('⚠️  当前没有在采集，无需按结束')
             return
+
+        self._publish_record_stop_signal()
+        self.get_logger().info(f'Stopping recording (source={source})')
 
         backend = self._active_backend
         self._active_backend = None
@@ -208,6 +287,7 @@ class McapRecorderNode(Node):
 
             if record_process is None:
                 self._show_background_save_complete(episode, success=True)
+                self._enqueue_episode_upload(episode)
                 return
 
             thread = threading.Thread(
@@ -253,10 +333,59 @@ class McapRecorderNode(Node):
             success = False
             error_message = str(exc)
             self.get_logger().error(f'Background save failed for {episode.episode_id}: {exc}')
+        save_ok = success and status == 'completed'
         self._show_background_save_complete(
             episode,
-            success=success and status == 'completed',
+            success=save_ok,
             error_message=error_message,
+        )
+        if save_ok:
+            self._enqueue_episode_upload(episode)
+
+    def _enqueue_episode_upload(self, episode: EpisodeInfo) -> None:
+        if self._uploader is None:
+            return
+        try:
+            if self._uploader.enqueue(episode.episode_dir):
+                _collector_card(
+                    '☁️  已加入上传队列',
+                    [
+                        f'🆔  {episode.episode_id}',
+                        '📤  后台上传中，不影响开始下一段采集',
+                    ],
+                    headline_bg=_BG_CYAN,
+                    body_color=_CYAN,
+                )
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Failed to enqueue upload for {episode.episode_id} '
+                f'(recording unaffected): {exc}'
+            )
+
+    def _on_upload_finished(self, episode_dir: Path, success: bool, error_message: str) -> None:
+        episode_id = episode_dir.name
+        if success and self._upload_config is not None:
+            remote = f'{self._upload_config.remote_base_dir.rstrip("/")}/{episode_id}'
+            _collector_card(
+                f'☁️  上传完成  ·  {episode_id}',
+                [
+                    '✅  本段已同步到服务器',
+                    f'🌐  {self._upload_config.user}@{self._upload_config.host}:{remote}',
+                    f'📁  本地保留：{episode_dir.resolve()}',
+                ],
+                headline_bg=_BG_GREEN,
+                body_color=_GREEN,
+            )
+            return
+        _collector_card(
+            f'⚠️  上传失败  ·  {episode_id}',
+            [
+                '💾  本地数据仍在，采集可继续',
+                f'📁  {episode_dir.resolve()}',
+                f'💥  {error_message or "未知错误"}',
+            ],
+            headline_bg=_BG_YELLOW,
+            body_color=_YELLOW,
         )
 
     def _show_recording_started(self, episode: EpisodeInfo, pending_background_saves: int) -> None:
@@ -341,13 +470,16 @@ class McapRecorderNode(Node):
     def destroy_node(self) -> bool:
         if self.session.is_recording:
             now_ns = self.get_clock().now().nanoseconds
-            self._stop_recording(now_ns)
+            self._stop_recording(now_ns, source='node_shutdown')
         pending = self._pending_save_count()
         if pending > 0:
             _collector_line(
                 _colorize(f'  ⏳  程序退出中，等待 {pending} 段后台保存…', _MAGENTA)
             )
             self._wait_for_background_saves()
+        if self._uploader is not None:
+            _collector_line(_colorize('  ⏳  等待后台上传任务结束…', _MAGENTA))
+            self._uploader.shutdown()
         return super().destroy_node()
 
 
