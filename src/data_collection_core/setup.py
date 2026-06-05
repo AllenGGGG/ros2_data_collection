@@ -17,4 +17,9 @@ setup(
     description='Core session and rosbag2 MCAP recording helpers for data collection.',
     license='TODO',
     tests_require=['pytest'],
+    entry_points={
+        'console_scripts': [
+            'episode_upload_pending = data_collection_core.upload_cli:main',
+        ],
+    },
 )

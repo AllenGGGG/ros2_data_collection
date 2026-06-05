@@ -10,8 +10,9 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from std_msgs.msg import Int32
-
 from data_collection_core.bag_ros2_cli import BagRos2CliBackend
+from data_collection_core.episode_uploader import EpisodeUploader
+from data_collection_core.upload_config import UploadConfig, load_upload_config
 from data_collection_core.constants import (
     DEFAULT_CONTROL_TOPIC,
     INFERENCE_PAUSED_CODE,
@@ -97,20 +98,28 @@ class McapRecorderNode(Node):
         self._active_backend: Optional[BagRos2CliBackend] = None
         self._save_threads: list[threading.Thread] = []
         self._save_threads_lock = threading.Lock()
+        self._uploader: Optional[EpisodeUploader] = None
+        self._upload_config: Optional[UploadConfig] = None
 
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
         self._create_control_subscription()
+        self._init_uploader()
 
         self.get_logger().debug(
             f'mcap_recorder ready output_dir={self.output_dir} profile={self.profile_path}'
         )
+        ready_lines = [
+            f'📂 保存目录：{self.output_dir.expanduser()}',
+            '🎮 开始采集 → 控制器 13',
+            '🛑 结束采集 → 控制器 14',
+        ]
+        if self._uploader is not None:
+            ready_lines.append(
+                f'☁️  落盘后将自动上传 → {self._upload_config.user}@{self._upload_config.host}'
+            )
         _collector_card(
             '📡  数采程序已就绪',
-            [
-                f'📂 保存目录：{self.output_dir.expanduser()}',
-                '🎮 开始采集 → 控制器 13',
-                '🛑 结束采集 → 控制器 14',
-            ],
+            ready_lines,
             headline_bg=_BG_CYAN,
             body_color=_BLUE,
         )
@@ -121,6 +130,31 @@ class McapRecorderNode(Node):
             return Path(configured).expanduser().resolve()
         share_dir = Path(get_package_share_directory('data_collection_recorder'))
         return share_dir / 'config' / 'recording' / 'default_profile.yaml'
+
+    def _resolve_upload_config_path(self) -> Path:
+        share_dir = Path(get_package_share_directory('data_collection_recorder'))
+        return share_dir / 'config' / 'recording' / 'upload.yaml'
+
+    def _init_uploader(self) -> None:
+        try:
+            config_path = self._resolve_upload_config_path()
+            config = load_upload_config(config_path)
+            if not config.enabled:
+                self.get_logger().info('Episode upload disabled in upload.yaml')
+                return
+            self._upload_config = config
+            self._uploader = EpisodeUploader(
+                config=config,
+                output_dir=self.output_dir,
+                on_finished=self._on_upload_finished,
+            )
+            self._uploader.start()
+        except Exception as exc:
+            self._uploader = None
+            self._upload_config = None
+            self.get_logger().warn(
+                f'Episode upload disabled due to config error (recording unaffected): {exc}'
+            )
 
     def _resolve_output_dir(self) -> Path:
         configured = str(self.get_parameter('output_dir').value).strip()
@@ -208,6 +242,7 @@ class McapRecorderNode(Node):
 
             if record_process is None:
                 self._show_background_save_complete(episode, success=True)
+                self._enqueue_episode_upload(episode)
                 return
 
             thread = threading.Thread(
@@ -253,10 +288,59 @@ class McapRecorderNode(Node):
             success = False
             error_message = str(exc)
             self.get_logger().error(f'Background save failed for {episode.episode_id}: {exc}')
+        save_ok = success and status == 'completed'
         self._show_background_save_complete(
             episode,
-            success=success and status == 'completed',
+            success=save_ok,
             error_message=error_message,
+        )
+        if save_ok:
+            self._enqueue_episode_upload(episode)
+
+    def _enqueue_episode_upload(self, episode: EpisodeInfo) -> None:
+        if self._uploader is None:
+            return
+        try:
+            if self._uploader.enqueue(episode.episode_dir):
+                _collector_card(
+                    '☁️  已加入上传队列',
+                    [
+                        f'🆔  {episode.episode_id}',
+                        '📤  后台上传中，不影响开始下一段采集',
+                    ],
+                    headline_bg=_BG_CYAN,
+                    body_color=_CYAN,
+                )
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Failed to enqueue upload for {episode.episode_id} '
+                f'(recording unaffected): {exc}'
+            )
+
+    def _on_upload_finished(self, episode_dir: Path, success: bool, error_message: str) -> None:
+        episode_id = episode_dir.name
+        if success and self._upload_config is not None:
+            remote = f'{self._upload_config.remote_base_dir.rstrip("/")}/{episode_id}'
+            _collector_card(
+                f'☁️  上传完成  ·  {episode_id}',
+                [
+                    '✅  本段已同步到服务器',
+                    f'🌐  {self._upload_config.user}@{self._upload_config.host}:{remote}',
+                    f'📁  本地保留：{episode_dir.resolve()}',
+                ],
+                headline_bg=_BG_GREEN,
+                body_color=_GREEN,
+            )
+            return
+        _collector_card(
+            f'⚠️  上传失败  ·  {episode_id}',
+            [
+                '💾  本地数据仍在，采集可继续',
+                f'📁  {episode_dir.resolve()}',
+                f'💥  {error_message or "未知错误"}',
+            ],
+            headline_bg=_BG_YELLOW,
+            body_color=_YELLOW,
         )
 
     def _show_recording_started(self, episode: EpisodeInfo, pending_background_saves: int) -> None:
@@ -348,6 +432,9 @@ class McapRecorderNode(Node):
                 _colorize(f'  ⏳  程序退出中，等待 {pending} 段后台保存…', _MAGENTA)
             )
             self._wait_for_background_saves()
+        if self._uploader is not None:
+            _collector_line(_colorize('  ⏳  等待后台上传任务结束…', _MAGENTA))
+            self._uploader.shutdown()
         return super().destroy_node()
 
 
