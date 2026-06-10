@@ -1,4 +1,4 @@
-output_dir: ~/ros2_ws/raw_datasets_mcap
+output_dir: /media/zihang/My PSSD/new_data
 default_qos_depth: 10
 
 topics:
