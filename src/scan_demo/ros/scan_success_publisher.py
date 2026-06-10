@@ -14,7 +14,13 @@ import sys
 import threading
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "matrix220"))
+from scan_terminal import (  # noqa: E402
+    announce_arm_next,
+    announce_record_stop,
+    announce_scan_success,
+)
 from tcp import is_valid_read  # noqa: E402
 
 try:
@@ -88,20 +94,20 @@ class ScanSuccessPublisher(Node):
                 return
             self._scanned = True
             self._armed = False
-        self.get_logger().info(f"扫码 {code!r} -> {TOPIC_SUCCESS} 置 1")
+        seq = announce_scan_success(code)
+        self.get_logger().info(f"scan success #{seq:03d}: {code!r} -> {TOPIC_SUCCESS}=1")
 
     def _on_record_stop(self, _msg: Empty) -> None:
         with self._lock:
             self._scanned = False
             self._armed = False
-        self.get_logger().info(
-            f"收到 {self._record_stop_topic} -> {TOPIC_SUCCESS} 置 0；"
-            f"等待 /scan/arm_next 后再接受扫码"
-        )
+        announce_record_stop()
+        self.get_logger().info(f"{self._record_stop_topic} -> {TOPIC_SUCCESS} 置 0")
 
     def _on_arm_next(self, _msg: Empty) -> None:
         with self._lock:
             self._armed = True
+        announce_arm_next()
         self.get_logger().info("已允许下一次扫码置 1")
 
     def _on_tick(self) -> None:

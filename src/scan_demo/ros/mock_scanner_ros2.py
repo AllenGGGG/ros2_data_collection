@@ -24,6 +24,7 @@ except ImportError as exc:
     raise SystemExit(1) from exc
 
 from keyboard_single_key import SingleKeyKeyboard
+from scan_terminal import announce_mock_scan_success, announce_record_stop
 
 TOPIC = "/scan/success"
 DEFAULT_RECORD_STOP_TOPIC = "/ros2recordstop"
@@ -52,6 +53,7 @@ class MockScannerNode(Node):
 
     def _on_record_stop(self, _msg: Empty) -> None:
         self.reset(reason="ros2recordstop")
+        announce_record_stop()
 
     def mark_scanned(self) -> None:
         with self._lock:
@@ -59,12 +61,13 @@ class MockScannerNode(Node):
                 self.get_logger().info("已是全 1 状态")
                 return
             self._scanned = True
-        self.get_logger().info("扫成功 -> 之后持续输出全 1")
+        seq = announce_mock_scan_success()
+        self.get_logger().info(f"mock scan success #{seq:03d} -> {TOPIC}=1")
 
     def reset(self, *, reason: str = "manual") -> None:
         with self._lock:
             self._scanned = False
-        self.get_logger().info(f"已复位 -> 之后持续输出全 0 ({reason})")
+        self.get_logger().info(f"已复位 -> {TOPIC}=0 ({reason})")
 
     def _on_tick(self) -> None:
         with self._lock:

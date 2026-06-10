@@ -15,7 +15,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ros"))
 
+from scan_terminal import announce_code_read  # noqa: E402
 from tcp import (  # noqa: E402
     DEFAULT_PORT,
     TcpClientReceiver,
@@ -96,7 +98,8 @@ class Matrix220Driver(Node):
         msg = String()
         msg.data = publish_code
         self._pub.publish(msg)
-        self.get_logger().info(f"[{source}] 新条码: {publish_code!r}")
+        announce_code_read(publish_code, source=source)
+        self.get_logger().info(f"[{source}] published /scan/code: {publish_code!r}")
 
 
 def main() -> None:
