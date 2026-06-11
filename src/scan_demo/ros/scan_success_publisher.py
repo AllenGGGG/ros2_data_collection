@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "matrix220"))
 from scan_terminal import (  # noqa: E402
     announce_arm_next,
     announce_record_stop,
+    announce_scan_ignored,
     announce_scan_success,
 )
 from tcp import is_valid_read  # noqa: E402
@@ -90,7 +91,11 @@ class ScanSuccessPublisher(Node):
         if not is_valid_read(code):
             return
         with self._lock:
-            if not self._armed or self._scanned:
+            if not self._armed:
+                announce_scan_ignored(code, reason="未解锁(请先停录后再扫，或等待录包结束)")
+                return
+            if self._scanned:
+                announce_scan_ignored(code, reason="本段已扫成功( success 仍为 1 )")
                 return
             self._scanned = True
             self._armed = False
@@ -100,9 +105,11 @@ class ScanSuccessPublisher(Node):
     def _on_record_stop(self, _msg: Empty) -> None:
         with self._lock:
             self._scanned = False
-            self._armed = False
+            self._armed = True
         announce_record_stop()
-        self.get_logger().info(f"{self._record_stop_topic} -> {TOPIC_SUCCESS} 置 0")
+        self.get_logger().info(
+            f"{self._record_stop_topic} -> {TOPIC_SUCCESS} 置 0，已允许下一次扫码（含同条码）"
+        )
 
     def _on_arm_next(self, _msg: Empty) -> None:
         with self._lock:

@@ -63,8 +63,12 @@ def announce_scan_success(code: str) -> int:
 def announce_record_stop() -> None:
     _line()
     _line(_c("  ⏹️  录包已停 → /scan/success 复位为 0", _BG_YELLOW, _YELLOW))
-    _line(_c("  ⏳  移开扫码器或出现 NG 后，可扫下一条", _YELLOW))
+    _line(_c("  👉  可直接再扫同一条码，成功后会变 1", _YELLOW))
     _line()
+
+
+def announce_scan_ignored(code: str, *, reason: str) -> None:
+    _line(_c(f"  ⚠️  读到条码但未置 1: {code}  ({reason})", _YELLOW))
 
 
 def announce_arm_next() -> None:

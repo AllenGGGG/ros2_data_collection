@@ -58,12 +58,13 @@ class Matrix220Driver(Node):
 
     def _on_record_stop(self, _msg: Empty) -> None:
         with self._lock:
-            self._hold_repeat = True
-            self._held_code = self._last_code
+            # 同一条码重复采集：停录后允许下一次 TCP 读码再次发布 /scan/code
+            self._hold_repeat = False
+            self._held_code = ""
             self._last_code = ""
+        self._notify_arm_next()
         self.get_logger().info(
-            f"录包停止 -> 抑制重复条码 {self._held_code!r}，"
-            f"需先移开/NG 再扫才发布下一次 /scan/code"
+            "录包停止 -> 已复位读码状态，下一条有效条码（含同码）可再次发布 /scan/code"
         )
 
     def _notify_arm_next(self) -> None:
