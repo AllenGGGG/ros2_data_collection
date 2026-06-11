@@ -1,4 +1,4 @@
-output_dir: /media/zihang/My PSSD/new_data
+output_dir: /home/zihang/workspace/handover_dataset/handover_scanner_mcap_raw_speed/r1
 default_qos_depth: 10
 
 topics:
@@ -40,6 +40,6 @@ topics:
   - name: /scan/success
     type: std_msgs/msg/Float32MultiArray
     qos_depth: 10
-  - name: /scan/code
-    type: std_msgs/msg/String
-    qos_depth: 10
+  # - name: /scan/code
+  #   type: std_msgs/msg/String
+  #   qos_depth: 10

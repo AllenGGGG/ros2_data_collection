@@ -22,6 +22,42 @@ bash stop_all.sh          # 先关旧节点（避免 0/1 跳动）
 bash start_matrix220_ros2.sh
 ```
 
+## 新主机 / USB hub 网络配置
+
+扫码器默认地址是 `192.168.10.104:51236`。新主机第一次使用时，先插好
+hub/扫码器，然后安装一次持久化 NetworkManager 配置：
+
+```bash
+cd ~/ros2_data_collection_YWL/src/scan_demo
+sudo bash netplan/install_matrix220_network.sh
+```
+
+脚本会优先自动选择 hub 上的 USB 以太网卡（常见名称如 `enx...`），给本机配置
+`192.168.10.10/32`，并添加到扫码器 `192.168.10.104/32` 的专用路由。这样即使
+WiFi 也在 `192.168.10.x` 网段，访问扫码器也会走 hub 上的有线网卡。
+
+如果自动选择失败，先查看网卡名：
+
+```bash
+nmcli device status
+```
+
+然后手动指定，例如：
+
+```bash
+MATRIX220_IFACE=enx207bd51a38c5 sudo -E bash netplan/install_matrix220_network.sh
+```
+
+如果扫码器 IP 不是默认值：
+
+```bash
+MATRIX220_HOST=192.168.10.104 MATRIX220_IFACE=enx207bd51a38c5 sudo -E bash netplan/install_matrix220_network.sh
+MATRIX220_HOST=192.168.10.104 bash start_matrix220_ros2.sh
+```
+
+旧入口 `netplan/install_eno1.sh` 仍可用，但现在会转到通用安装脚本，不再固定使用
+`eno1`。
+
 ## 目录
 
 ```

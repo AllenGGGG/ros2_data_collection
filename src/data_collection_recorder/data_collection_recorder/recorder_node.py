@@ -267,6 +267,7 @@ class McapRecorderNode(Node):
     def _stop_recording(self, timestamp_ns: int, *, source: str = 'controller') -> None:
         if not self.session.is_recording:
             if source != 'scan_success':
+                self._publish_record_stop_signal()
                 self._collector_warn('⚠️  当前没有在采集，无需按结束')
             return
 
