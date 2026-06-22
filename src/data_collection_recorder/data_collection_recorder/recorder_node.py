@@ -12,8 +12,6 @@ from std_msgs.msg import Int32
 from data_collection_core.bag_ros2_cli import BagRos2CliBackend
 from data_collection_core.constants import (
     DEFAULT_CONTROL_TOPIC,
-    INFERENCE_PAUSED_CODE,
-    INFERENCE_RESUMED_CODE,
     START_RECORDING_CODE,
     STOP_RECORDING_CODE,
 )
@@ -106,12 +104,6 @@ class McapRecorderNode(Node):
             self._start_recording(timestamp_ns)
         elif code == STOP_RECORDING_CODE:
             self._stop_recording(timestamp_ns)
-        elif code == INFERENCE_PAUSED_CODE:
-            if self.session.start_intervention(code=code, timestamp_ns=timestamp_ns):
-                self.get_logger().info('Intervention started; recording continues')
-        elif code == INFERENCE_RESUMED_CODE:
-            if self.session.end_intervention(code=code, timestamp_ns=timestamp_ns):
-                self.get_logger().info('Intervention ended; recording continues')
 
     def _start_recording(self, timestamp_ns: int) -> None:
         if self._saving_in_progress:

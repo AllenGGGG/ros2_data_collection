@@ -2,8 +2,6 @@ output_dir: /home/zihang/workspace/chekp/test_recap
 default_qos_depth: 10
 
 topics:
-  # 默认使用 CompressedImage（Yerba JPEG 话题）进行采集。
-  # 如需切回 raw Image，请将 topic 改为 /image_raw 并把 type 改为 sensor_msgs/msg/Image。
   - name: /camera_head/color/image_raw/compressed
     type: sensor_msgs/msg/CompressedImage
     qos_depth: 10
@@ -34,6 +32,12 @@ topics:
   - name: /right_gripper_controller/target_command
     type: std_msgs/msg/Int32
     qos_depth: 10
+  - name: /scan/success
+    type: std_msgs/msg/Float32MultiArray
+    qos_depth: 10
   - name: /xr/controller_state
+    type: std_msgs/msg/Int32
+    qos_depth: 10
+  - name: /intervention
     type: std_msgs/msg/Int32
     qos_depth: 10
