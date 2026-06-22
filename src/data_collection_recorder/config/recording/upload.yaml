@@ -1,0 +1,14 @@
+# Episode 落盘完成后，后台 rsync 整段目录到远程服务器（需 SSH 密钥免密）。
+# 上传开关：仅改 enabled（true/false），勿用 launch 参数。
+# 勿在此文件填写密码。
+
+upload:
+  enabled: true
+  host: 120.131.12.156
+  port: 22
+  user: ubuntu
+  remote_base_dir: /home/ubuntu/raw_datasets_mcap
+  identity_file: ~/.ssh/id_ed25519
+  retry_count: 3
+  max_parallel: 1
+  scan_on_startup: true

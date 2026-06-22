@@ -1,17 +1,22 @@
+import sys
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
-from std_msgs.msg import Int32
-
+from std_msgs.msg import Empty, Float32MultiArray, Int32
 from data_collection_core.bag_ros2_cli import BagRos2CliBackend
+from data_collection_core.episode_uploader import EpisodeUploader
+from data_collection_core.upload_config import UploadConfig, load_upload_config
 from data_collection_core.constants import (
     DEFAULT_CONTROL_TOPIC,
+    RECORD_STOP_TOPIC,
+    SCAN_SUCCESS_TOPIC,
     START_RECORDING_CODE,
     STOP_RECORDING_CODE,
 )
@@ -20,13 +25,26 @@ from data_collection_core.topic_registry import TopicProfile
 
 DEFAULT_OUTPUT_DIR = '~/ros2_ws/raw_datasets_mcap'
 
-_TERMINAL_WIDTH = 72
-_ANSI_RESET = '\033[0m'
-_ANSI_BOLD_GREEN = '\033[1;92m'
-_ANSI_BOLD_CYAN = '\033[1;96m'
-_ANSI_BOLD_YELLOW = '\033[1;93m'
-_ANSI_BOLD_RED = '\033[1;91m'
-_ANSI_BOLD_WHITE = '\033[1;97m'
+# 采集员终端样式（仅 print，不重复刷 ROS 日志）
+_R = '\033[0m'
+_GREEN = '\033[1;92m'
+_CYAN = '\033[1;96m'
+_YELLOW = '\033[1;93m'
+_MAGENTA = '\033[1;95m'
+_RED = '\033[1;91m'
+_BLUE = '\033[1;94m'
+_DIM = '\033[2m'
+_BG_GREEN = '\033[42;30m'
+_BG_YELLOW = '\033[43;30m'
+_BG_CYAN = '\033[46;30m'
+_BG_RED = '\033[41;97m'
+
+
+def scan_success_is_active(msg: Float32MultiArray) -> bool:
+    """True when /scan/success represents a successful scan (all dims >= 0.5)."""
+    if not msg.data:
+        return False
+    return all(value >= 0.5 for value in msg.data)
 
 
 def message_timestamp_ns(msg: Any, fallback_ns: int) -> int:
@@ -35,6 +53,31 @@ def message_timestamp_ns(msg: Any, fallback_ns: int) -> int:
     if stamp is None:
         return fallback_ns
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+def _colorize(text: str, *codes: str) -> str:
+    if not sys.stdout.isatty():
+        return text
+    return ''.join(codes) + text + _R
+
+
+def _collector_line(text: str = '') -> None:
+    print(text, flush=True)
+
+
+def _collector_card(
+    headline: str,
+    lines: list[str],
+    *,
+    headline_bg: str = _BG_CYAN,
+    body_color: str = _CYAN,
+) -> None:
+    _collector_line()
+    _collector_line(_colorize(f'  {headline}  ', headline_bg))
+    for line in lines:
+        _collector_line(_colorize(f'  {line}', body_color))
+    _collector_line(_colorize('  ' + '─' * 56, _DIM))
+    _collector_line()
 
 
 class McapRecorderNode(Node):
@@ -55,20 +98,41 @@ class McapRecorderNode(Node):
         self.profile = TopicProfile.from_yaml(self.profile_path)
         self.output_dir = self._resolve_output_dir()
         self.session = EpisodeSession(self.output_dir)
-        self.backend = BagRos2CliBackend(
-            topic_names=[topic.name for topic in self.profile.topics],
-            storage_id=str(self.get_parameter('storage_id').value),
-            storage_preset_profile=str(self.get_parameter('storage_preset_profile').value),
-        )
+        self._storage_id = str(self.get_parameter('storage_id').value)
+        self._storage_preset_profile = str(self.get_parameter('storage_preset_profile').value)
+        self._topic_names = [topic.name for topic in self.profile.topics]
+
+        self._active_backend: Optional[BagRos2CliBackend] = None
+        self._save_threads: list[threading.Thread] = []
+        self._save_threads_lock = threading.Lock()
+        self._uploader: Optional[EpisodeUploader] = None
+        self._upload_config: Optional[UploadConfig] = None
+        self._scan_success_is_active = False
 
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
-        self._saving_in_progress = False
+        self.scan_callback_group = ReentrantCallbackGroup()
+        self._record_stop_publisher = self.create_publisher(Empty, RECORD_STOP_TOPIC, 10)
         self._create_control_subscription()
+        self._create_scan_subscription()
+        self._init_uploader()
 
-        self.get_logger().info(
-            f'Native ros2 bag recorder ready; output_dir={self.output_dir.expanduser()}, '
-            f'profile={self.profile_path}, '
-            f'storage_preset_profile={self.get_parameter("storage_preset_profile").value}'
+        self.get_logger().debug(
+            f'mcap_recorder ready output_dir={self.output_dir} profile={self.profile_path}'
+        )
+        ready_lines = [
+            f'📂 保存目录：{self.output_dir.expanduser()}',
+            '🎮 开始采集 → 控制器 13',
+            '🛑 结束采集 → 控制器 14 或 /scan/success 变 0',
+        ]
+        if self._uploader is not None:
+            ready_lines.append(
+                f'☁️  落盘后将自动上传 → {self._upload_config.user}@{self._upload_config.host}'
+            )
+        _collector_card(
+            '📡  数采程序已就绪',
+            ready_lines,
+            headline_bg=_BG_CYAN,
+            body_color=_BLUE,
         )
 
     def _resolve_profile_path(self) -> Path:
@@ -78,6 +142,31 @@ class McapRecorderNode(Node):
         share_dir = Path(get_package_share_directory('data_collection_recorder'))
         return share_dir / 'config' / 'recording' / 'default_profile.yaml'
 
+    def _resolve_upload_config_path(self) -> Path:
+        share_dir = Path(get_package_share_directory('data_collection_recorder'))
+        return share_dir / 'config' / 'recording' / 'upload.yaml'
+
+    def _init_uploader(self) -> None:
+        try:
+            config_path = self._resolve_upload_config_path()
+            config = load_upload_config(config_path)
+            if not config.enabled:
+                self.get_logger().info('Episode upload disabled in upload.yaml')
+                return
+            self._upload_config = config
+            self._uploader = EpisodeUploader(
+                config=config,
+                output_dir=self.output_dir,
+                on_finished=self._on_upload_finished,
+            )
+            self._uploader.start()
+        except Exception as exc:
+            self._uploader = None
+            self._upload_config = None
+            self.get_logger().warn(
+                f'Episode upload disabled due to config error (recording unaffected): {exc}'
+            )
+
     def _resolve_output_dir(self) -> Path:
         configured = str(self.get_parameter('output_dir').value).strip()
         if configured:
@@ -85,6 +174,13 @@ class McapRecorderNode(Node):
         if self.profile.output_dir:
             return Path(self.profile.output_dir)
         return Path(DEFAULT_OUTPUT_DIR)
+
+    def _new_backend(self) -> BagRos2CliBackend:
+        return BagRos2CliBackend(
+            topic_names=self._topic_names,
+            storage_id=self._storage_id,
+            storage_preset_profile=self._storage_preset_profile,
+        )
 
     def _create_control_subscription(self) -> None:
         self.create_subscription(
@@ -94,7 +190,34 @@ class McapRecorderNode(Node):
             QoSProfile(depth=10),
             callback_group=self.control_callback_group,
         )
-        self.get_logger().info(f'Subscribed to control topic {self.control_topic} (std_msgs/msg/Int32)')
+
+    def _create_scan_subscription(self) -> None:
+        self.create_subscription(
+            Float32MultiArray,
+            SCAN_SUCCESS_TOPIC,
+            self._handle_scan_success,
+            QoSProfile(depth=10),
+            callback_group=self.scan_callback_group,
+        )
+        self.get_logger().info(
+            f'Bound stop recording to {SCAN_SUCCESS_TOPIC} 1->0 while recording'
+        )
+
+    def _publish_record_stop_signal(self) -> None:
+        self._record_stop_publisher.publish(Empty())
+
+    def _handle_scan_success(self, msg: Float32MultiArray) -> None:
+        is_active = scan_success_is_active(msg)
+        was_active = self._scan_success_is_active
+        self._scan_success_is_active = is_active
+        if not self.session.is_recording:
+            return
+        if was_active and not is_active:
+            timestamp_ns = self.get_clock().now().nanoseconds
+            self.get_logger().info(
+                f'{SCAN_SUCCESS_TOPIC} 1->0 while recording; stopping episode'
+            )
+            self._stop_recording(timestamp_ns, source='scan_success')
 
     def _handle_control_message(self, msg: Any) -> None:
         timestamp_ns = message_timestamp_ns(msg, self.get_clock().now().nanoseconds)
@@ -103,178 +226,255 @@ class McapRecorderNode(Node):
         if code == START_RECORDING_CODE:
             self._start_recording(timestamp_ns)
         elif code == STOP_RECORDING_CODE:
-            self._stop_recording(timestamp_ns)
+            self._stop_recording(timestamp_ns, source='controller_14')
+
+    def _pending_save_count(self) -> int:
+        with self._save_threads_lock:
+            self._save_threads = [thread for thread in self._save_threads if thread.is_alive()]
+            return len(self._save_threads)
 
     def _start_recording(self, timestamp_ns: int) -> None:
-        if self._saving_in_progress:
-            self._emit_terminal_notice(
-                '上一段数据仍在落盘保存中，请等待「保存完成」提示后再开始下一轮采集。',
-                level='warn',
-            )
-            return
         if self.session.is_recording:
-            self._emit_terminal_notice('当前已在采集中，忽略重复的开始指令。', level='warn')
+            self._collector_warn('⚠️  已在采集中，无需重复按开始')
             return
 
+        pending = self._pending_save_count()
         try:
             episode = self.session.start(timestamp_ns=timestamp_ns)
-            self.backend.start(
+            backend = self._new_backend()
+            backend.start(
                 recording_dir=episode.recording_dir,
                 topic_types=self.profile.type_map(),
             )
-            preset = str(self.get_parameter('storage_preset_profile').value)
-            self._log_recording_started(episode, storage_preset_profile=preset)
-            if preset == 'none':
-                self.get_logger().warn(
-                    'Recording with no MCAP compression preset; expect very large bags for raw Image topics'
-                )
+            self._active_backend = backend
+            self._show_recording_started(episode, pending)
+            if self._storage_preset_profile == 'none':
+                self.get_logger().warn('storage_preset_profile=none, bags may be very large')
         except Exception as exc:
             self.session.mark_error(str(exc))
             if self.session.is_recording:
                 self.session.stop(timestamp_ns=timestamp_ns, status='error')
+            self._active_backend = None
             self.get_logger().error(f'Failed to start MCAP recording: {exc}')
+            self._collector_warn(f'❌  开始采集失败：{exc}')
 
-    def _stop_recording(self, timestamp_ns: int) -> None:
+    def _stop_recording(self, timestamp_ns: int, *, source: str = 'controller') -> None:
         if not self.session.is_recording:
-            self._emit_terminal_notice('当前未在采集，忽略结束指令。', level='warn')
+            if source != 'scan_success':
+                self._publish_record_stop_signal()
+                self._collector_warn('⚠️  当前没有在采集，无需按结束')
             return
 
-        self._saving_in_progress = True
+        self._publish_record_stop_signal()
+        self.get_logger().info(f'Stopping recording (source={source})')
+
+        backend = self._active_backend
+        self._active_backend = None
+        episode: Optional[EpisodeInfo] = None
+
         try:
-            self._log_saving_in_progress()
-            self.backend.stop()
             episode = self.session.stop(timestamp_ns=timestamp_ns)
-            if episode:
-                self._log_saving_complete()
-                self._log_recording_stopped(episode, status='completed')
+            if episode is None:
+                return
+
+            record_process = backend.detach_process() if backend is not None else None
+            self._show_stop_handoff(episode)
+
+            if record_process is None:
+                self._show_background_save_complete(episode, success=True)
+                self._enqueue_episode_upload(episode)
+                return
+
+            thread = threading.Thread(
+                target=self._finalize_episode_save,
+                args=(episode, record_process, backend.stop_timeout_sec, 'completed'),
+                name=f'mcap-save-{episode.episode_id}',
+                daemon=True,
+            )
+            with self._save_threads_lock:
+                self._save_threads.append(thread)
+            thread.start()
         except Exception as exc:
             self.session.mark_error(str(exc))
-            try:
-                self.backend.stop()
-            except Exception:
-                pass
-            episode = self.session.stop(timestamp_ns=timestamp_ns, status='error')
-            if episode:
-                self._log_saving_complete(success=False)
-                self._log_recording_stopped(episode, status='error')
-            self.get_logger().error(f'Failed to stop MCAP recording cleanly: {exc}')
-        finally:
-            self._saving_in_progress = False
+            if self.session.is_recording:
+                self.session.stop(timestamp_ns=timestamp_ns, status='error')
+            if backend is not None:
+                process = backend.detach_process()
+                if process is not None and episode is not None:
+                    thread = threading.Thread(
+                        target=self._finalize_episode_save,
+                        args=(episode, process, backend.stop_timeout_sec, 'error'),
+                        name=f'mcap-save-{episode.episode_id}',
+                        daemon=True,
+                    )
+                    with self._save_threads_lock:
+                        self._save_threads.append(thread)
+                    thread.start()
+            self.get_logger().error(f'Failed to stop MCAP recording: {exc}')
+            self._collector_warn(f'❌  结束采集异常：{exc}')
 
-    def _log_recording_started(self, episode: EpisodeInfo, storage_preset_profile: str) -> None:
-        episode_dir = episode.episode_dir.resolve()
-        recording_dir = episode.recording_dir.resolve()
-        metadata_path = episode_dir / 'metadata.json'
-        lines = [
-            '',
-            *self._boxed_banner('★  开 始 采 集  ★', fill_char='='),
-            '  采集员：本轮采集已开始，数据正在写入。',
-            f'  Episode ID : {episode.episode_id}',
-            f'  数据根目录   : {episode_dir}',
-            f'  MCAP 落盘    : {recording_dir}',
-            f'  元数据文件   : {metadata_path}',
-            f'  压缩预设     : {storage_preset_profile}',
-            '  结束本轮请点击「结束采集」(控制器 14)。',
-            '=' * _TERMINAL_WIDTH,
-            '',
-        ]
-        self._print_terminal_block(lines, color=_ANSI_BOLD_GREEN)
-
-    def _log_saving_in_progress(self) -> None:
-        lines = [
-            '',
-            *self._boxed_banner('⏳  正 在 保 存  请 稍 候  ⏳', fill_char='*'),
-            '  采集员注意：',
-            '  · 已收到「结束采集」，正在将 MCAP 落盘并关闭录制进程',
-            '  · 请勿关闭终端，勿再次点击结束采集',
-            '  · 请勿开始下一轮采集，直到出现「保存完成」提示',
-            '  · 大文件可能需要数十秒，请耐心等待',
-            '*' * _TERMINAL_WIDTH,
-            '',
-        ]
-        self._print_terminal_block(lines, color=_ANSI_BOLD_YELLOW)
-
-    def _log_saving_complete(self, success: bool = True) -> None:
-        if success:
-            title = '✓  保 存 完 成  可 开 始 下 一 轮  ✓'
-            hints = [
-                '  采集员：上一段数据已落盘完成。',
-                '  · 现在可以开始下一轮采集（控制器 13）',
-                '  · 请确认上方路径中已有 MCAP 文件',
-            ]
-            color = _ANSI_BOLD_GREEN
-        else:
-            title = '✗  保 存 异 常  请 检 查 日 志  ✗'
-            hints = [
-                '  采集员：停录过程出现异常，请查看日志后再决定是否重采。',
-                '  · 勿在未确认前开始下一轮采集',
-            ]
-            color = _ANSI_BOLD_RED
-        lines = [
-            '',
-            *self._boxed_banner(title, fill_char='='),
-            *hints,
-            '=' * _TERMINAL_WIDTH,
-            '',
-        ]
-        self._print_terminal_block(lines, color=color)
-
-    def _log_recording_stopped(self, episode: EpisodeInfo, status: str) -> None:
-        episode_dir = episode.episode_dir.resolve()
-        recording_dir = episode.recording_dir.resolve()
-        metadata_path = episode_dir / 'metadata.json'
-        mcap_files = sorted(recording_dir.glob('*.mcap')) if recording_dir.is_dir() else []
-        mcap_summary = (
-            ', '.join(f'{path.name} ({path.stat().st_size / 1e6:.1f} MB)' for path in mcap_files)
-            if mcap_files
-            else '(暂无 .mcap 文件，请检查是否正常停录)'
+    def _finalize_episode_save(
+        self,
+        episode: EpisodeInfo,
+        process: Any,
+        stop_timeout_sec: float,
+        status: str,
+    ) -> None:
+        success = True
+        error_message = ''
+        try:
+            BagRos2CliBackend.finalize_record_process(process, stop_timeout_sec)
+        except Exception as exc:
+            success = False
+            error_message = str(exc)
+            self.get_logger().error(f'Background save failed for {episode.episode_id}: {exc}')
+        save_ok = success and status == 'completed'
+        self._show_background_save_complete(
+            episode,
+            success=save_ok,
+            error_message=error_message,
         )
-        lines = [
-            '',
-            *self._boxed_banner('■  本 轮 采 集 已 结 束  ■', fill_char='-'),
-            f'  状态         : {status}',
-            f'  Episode ID   : {episode.episode_id}',
-            f'  数据根目录     : {episode_dir}',
-            f'  MCAP 落盘      : {recording_dir}',
-            f'  元数据文件     : {metadata_path}',
-            f'  MCAP 文件      : {mcap_summary}',
-            '-' * _TERMINAL_WIDTH,
-            '',
+        if save_ok:
+            self._enqueue_episode_upload(episode)
+
+    def _enqueue_episode_upload(self, episode: EpisodeInfo) -> None:
+        if self._uploader is None:
+            return
+        try:
+            if self._uploader.enqueue(episode.episode_dir):
+                _collector_card(
+                    '☁️  已加入上传队列',
+                    [
+                        f'🆔  {episode.episode_id}',
+                        '📤  后台上传中，不影响开始下一段采集',
+                    ],
+                    headline_bg=_BG_CYAN,
+                    body_color=_CYAN,
+                )
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Failed to enqueue upload for {episode.episode_id} '
+                f'(recording unaffected): {exc}'
+            )
+
+    def _on_upload_finished(self, episode_dir: Path, success: bool, error_message: str) -> None:
+        episode_id = episode_dir.name
+        if success and self._upload_config is not None:
+            remote = f'{self._upload_config.remote_base_dir.rstrip("/")}/{episode_id}'
+            _collector_card(
+                f'☁️  上传完成  ·  {episode_id}',
+                [
+                    '✅  本段已同步到服务器',
+                    f'🌐  {self._upload_config.user}@{self._upload_config.host}:{remote}',
+                    f'📁  本地保留：{episode_dir.resolve()}',
+                ],
+                headline_bg=_BG_GREEN,
+                body_color=_GREEN,
+            )
+            return
+        _collector_card(
+            f'⚠️  上传失败  ·  {episode_id}',
+            [
+                '💾  本地数据仍在，采集可继续',
+                f'📁  {episode_dir.resolve()}',
+                f'💥  {error_message or "未知错误"}',
+            ],
+            headline_bg=_BG_YELLOW,
+            body_color=_YELLOW,
+        )
+
+    def _show_recording_started(self, episode: EpisodeInfo, pending_background_saves: int) -> None:
+        episode_dir = episode.episode_dir.resolve()
+        rows = [
+            '🎬  正在录制，请操作机器人完成本段任务',
+            f'📁  {episode_dir}',
+            '🛑  结束本段 → 按 14',
         ]
-        self._print_terminal_block(lines, color=_ANSI_BOLD_CYAN)
+        if pending_background_saves > 0:
+            rows.append(f'💾  另有 {pending_background_saves} 段在后台保存（不影响本轮）')
+        _collector_card(
+            '✅  开始采集',
+            rows,
+            headline_bg=_BG_GREEN,
+            body_color=_GREEN,
+        )
 
-    def _emit_terminal_notice(self, message: str, level: str = 'info') -> None:
-        prefix = {'info': '[提示]', 'warn': '[注意]'}.get(level, '[提示]')
-        color = _ANSI_BOLD_YELLOW if level == 'warn' else _ANSI_BOLD_WHITE
-        line = f'{prefix} {message}'
-        self.get_logger().warn(message) if level == 'warn' else self.get_logger().info(message)
-        print(f'{color}{line}{_ANSI_RESET}', flush=True)
+    def _show_stop_handoff(self, episode: EpisodeInfo) -> None:
+        episode_dir = episode.episode_dir.resolve()
+        _collector_card(
+            '🛑  本段已结束',
+            [
+                f'🆔  {episode.episode_id}',
+                f'📁  {episode_dir}',
+                '💾  上一段正在后台保存…',
+                '👉  现在可以直接按 13 开始下一段',
+                '⚠️  不要关闭此终端窗口',
+            ],
+            headline_bg=_BG_YELLOW,
+            body_color=_YELLOW,
+        )
 
-    def _print_terminal_block(self, lines: list[str], color: str = '') -> None:
-        for line in lines:
-            if line.strip():
-                self.get_logger().info(line)
-            if color and line.strip():
-                print(f'{color}{line}{_ANSI_RESET}', flush=True)
-            else:
-                print(line, flush=True)
+    def _show_background_save_complete(
+        self,
+        episode: EpisodeInfo,
+        *,
+        success: bool,
+        error_message: str = '',
+    ) -> None:
+        episode_dir = episode.episode_dir.resolve()
+        recording_dir = episode.recording_dir.resolve()
+        mcap_files = sorted(recording_dir.glob('*.mcap')) if recording_dir.is_dir() else []
+        if mcap_files:
+            size_mb = sum(path.stat().st_size for path in mcap_files) / 1e6
+            file_hint = f'📦  {mcap_files[0].name}  约 {size_mb:.1f} MB'
+        else:
+            file_hint = '⚠️  未找到 MCAP 文件，请联系工程师'
 
-    @staticmethod
-    def _boxed_banner(title: str, fill_char: str = '#') -> list[str]:
-        width = _TERMINAL_WIDTH
-        inner = width - 4
-        border = fill_char * width
-        return [
-            border,
-            f'{fill_char} {title.center(inner)} {fill_char}',
-            border,
-        ]
+        if success:
+            _collector_card(
+                f'✅  保存完成  ·  {episode.episode_id}',
+                [
+                    '📂  数据已写好，本段可归档',
+                    f'📁  {episode_dir}',
+                    file_hint,
+                ],
+                headline_bg=_BG_GREEN,
+                body_color=_GREEN,
+            )
+        else:
+            _collector_card(
+                f'❌  保存失败  ·  {episode.episode_id}',
+                [
+                    f'📁  {episode_dir}',
+                    f'💥  {error_message or "未知错误"}',
+                    '📞  请暂停采集并联系工程师',
+                ],
+                headline_bg=_BG_RED,
+                body_color=_RED,
+            )
+
+    def _collector_warn(self, message: str) -> None:
+        _collector_line(_colorize(f'  {message}', _BG_YELLOW, _YELLOW))
+
+    def _wait_for_background_saves(self, timeout_sec: float = 120.0) -> None:
+        with self._save_threads_lock:
+            threads = list(self._save_threads)
+        for thread in threads:
+            thread.join(timeout=timeout_sec)
 
     def destroy_node(self) -> bool:
         if self.session.is_recording:
-            self.get_logger().warn('Node is shutting down while recording; stopping current episode')
             now_ns = self.get_clock().now().nanoseconds
-            self._stop_recording(now_ns)
+            self._stop_recording(now_ns, source='node_shutdown')
+        pending = self._pending_save_count()
+        if pending > 0:
+            _collector_line(
+                _colorize(f'  ⏳  程序退出中，等待 {pending} 段后台保存…', _MAGENTA)
+            )
+            self._wait_for_background_saves()
+        if self._uploader is not None:
+            _collector_line(_colorize('  ⏳  等待后台上传任务结束…', _MAGENTA))
+            self._uploader.shutdown()
         return super().destroy_node()
 
 
@@ -287,7 +487,7 @@ def main(args=None) -> None:
     try:
         executor.spin()
     except KeyboardInterrupt:
-        node.get_logger().info('Keyboard interrupt received, shutting down...')
+        pass
     finally:
         executor.shutdown()
         executor.remove_node(node)
