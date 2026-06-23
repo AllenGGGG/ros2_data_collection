@@ -11,8 +11,9 @@ DEFAULT_PORT = 51236
 
 
 def normalize_barcode(raw: str) -> str:
-    # 得利捷默认：STX(0x02) + 条码 + CR/LF
-    return raw.strip("\x00\r\n\t \x02\x03")
+    # 得利捷默认：STX(0x02) + 条码 + ETX(0x03) + CR/LF；部分固件还会发 CAN(0x18) 等控制符
+    stripped = raw.strip("\x00\r\n\t \x02\x03\x18")
+    return "".join(ch for ch in stripped if ch >= " " or ch == "\t")
 
 
 _INVALID_READS = frozenset(
@@ -32,6 +33,8 @@ _INVALID_READS = frozenset(
 
 def is_valid_read(text: str) -> bool:
     if not text:
+        return False
+    if not any(ch.isprintable() and not ch.isspace() for ch in text):
         return False
     upper = text.upper().strip()
     if upper in _INVALID_READS:
