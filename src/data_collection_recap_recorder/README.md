@@ -238,3 +238,10 @@ python -m no_subtask_rollout_converter \
 - 普通 MCAP 数采：`../data_collection_recorder/` 与仓库根目录 `README.md`
 - VR workflow 与历史 bug 说明：`../docs/fix_bug_data_collection_control_mechanis.md`
 - no-subtask 转换器：`../../../dataset_convert2lerobot/no_subtask_rollout_converter/README.md`
+cd /home/zihang/workspace/chekp/ros2_data_collection_YWL
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+
+ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py \
+  output_dir:=/home/zihang/workspace/chekp/test_recap \
+  python_executable:=/home/zihang/miniconda3/envs/lerobot_dev/bin/python3
