@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROS_DISTRO_NAME="${ROS_DISTRO:-jazzy}"
+
+usage() {
+  cat <<EOF
+用法:
+  ./quick.start          # 显示启动菜单
+  ./quick.start <序号>   # 直接启动某一项
+
+启动项:
+  1  recap 数采节点              recap 推理 rollout 专用；只启动 recap_mcap_recorder
+  2  普通 MCAP 数采              专家遥操 / 通用 MCAP；启动 mcap_recorder.launch.py
+  3  真实扫码节点 scan_demo      先清理旧扫码节点，再启动 Matrix220 与 /scan/success
+  4  legacy 旧版落盘             multi_subscriber；PNG + CSV fallback 路径
+  5  recap 一体化启动            recap 数采 + no-subtask 推理 launch
+  0  退出
+
+序号后面的额外参数会原样传给对应命令。
+示例:
+  ./quick.start 2 output_dir:=/tmp/raw_datasets_mcap
+  ./quick.start 4 --ros-args -p use_compressed_images:=true
+EOF
+}
+
+source_ros() {
+  local ros_setup="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
+  if [[ ! -f "${ros_setup}" ]]; then
+    echo "错误: 找不到 ${ros_setup}。请设置 ROS_DISTRO，或先安装 ROS 2。" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "${ros_setup}"
+}
+
+source_workspace() {
+  if [[ -f "${ROOT}/install/setup.bash" ]]; then
+    # shellcheck source=/dev/null
+    source "${ROOT}/install/setup.bash"
+  elif [[ -f "${ROOT}/install/local_setup.bash" ]]; then
+    # shellcheck source=/dev/null
+    source "${ROOT}/install/local_setup.bash"
+  else
+    echo "错误: 找不到工作区 install/setup.bash。请先在仓库根目录运行 colcon build。" >&2
+    exit 1
+  fi
+}
+
+run_ros_package() {
+  source_ros
+  source_workspace
+}
+
+run_recap_recorder() {
+  run_ros_package
+  exec ros2 run data_collection_recap_recorder recap_mcap_recorder "$@"
+}
+
+run_mcap_recorder() {
+  run_ros_package
+  exec ros2 launch data_collection_recorder mcap_recorder.launch.py "$@"
+}
+
+run_scan_demo() {
+  source_ros
+  cd "${ROOT}/src/scan_demo"
+  bash stop_all.sh
+  exec bash start_matrix220_ros2.sh "$@"
+}
+
+run_multi_subscriber() {
+  run_ros_package
+  exec ros2 run multi_subscriber multi_topic_subscriber "$@"
+}
+
+run_recap_full_launch() {
+  run_ros_package
+  exec ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py "$@"
+}
+
+choose() {
+  local choice="${1:-}"
+  shift || true
+
+  case "${choice}" in
+    1) run_recap_recorder "$@" ;;
+    2) run_mcap_recorder "$@" ;;
+    3) run_scan_demo "$@" ;;
+    4) run_multi_subscriber "$@" ;;
+    5) run_recap_full_launch "$@" ;;
+    0|q|Q|exit) exit 0 ;;
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "错误: 未知启动序号 '${choice}'。" >&2
+      echo >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+if [[ $# -gt 0 ]]; then
+  choose "$@"
+  exit 0
+fi
+
+usage
+printf "\n请输入启动序号: "
+read -r choice
+choose "${choice}"
