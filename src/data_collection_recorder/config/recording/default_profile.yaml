@@ -1,4 +1,4 @@
-output_dir: /home/zihang/workspace/chekp/test_recap
+output_dir: /home/liweile/train/test_data
 default_qos_depth: 10
 
 topics:

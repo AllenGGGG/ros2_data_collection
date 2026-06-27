@@ -19,6 +19,8 @@ usage() {
   0  退出
 
 序号后面的额外参数会原样传给对应命令。
+默认会先 colcon build 相关包，确保 src/config 修改同步到 install。
+如需跳过编译: QUICK_START_SKIP_BUILD=1 ./quick.start <序号>
 示例:
   ./quick.start 2 output_dir:=/tmp/raw_datasets_mcap
   ./quick.start 4 --ros-args -p use_compressed_images:=true
@@ -45,6 +47,24 @@ source_workspace() {
   fi
 }
 
+build_workspace_packages() {
+  if [[ "${QUICK_START_SKIP_BUILD:-0}" == "1" ]]; then
+    echo "跳过编译: QUICK_START_SKIP_BUILD=1"
+    return
+  fi
+
+  if ! command -v colcon >/dev/null 2>&1; then
+    echo "错误: 找不到 colcon，无法编译工作区。" >&2
+    exit 1
+  fi
+
+  echo "编译工作区包: $*"
+  (
+    cd "${ROOT}"
+    colcon build --symlink-install --packages-select "$@"
+  )
+}
+
 source_setup() {
   local setup_file="$1"
   local restore_nounset=false
@@ -66,16 +86,17 @@ source_setup() {
 
 run_ros_package() {
   source_ros
+  build_workspace_packages "$@"
   source_workspace
 }
 
 run_recap_recorder() {
-  run_ros_package
+  run_ros_package data_collection_core data_collection_recorder data_collection_recap_recorder
   exec ros2 run data_collection_recap_recorder recap_mcap_recorder "$@"
 }
 
 run_mcap_recorder() {
-  run_ros_package
+  run_ros_package data_collection_core data_collection_recorder
   exec ros2 launch data_collection_recorder mcap_recorder.launch.py "$@"
 }
 
@@ -102,12 +123,12 @@ run_scan_demo() {
 }
 
 run_multi_subscriber() {
-  run_ros_package
+  run_ros_package multi_subscriber
   exec ros2 run multi_subscriber multi_topic_subscriber "$@"
 }
 
 run_recap_full_launch() {
-  run_ros_package
+  run_ros_package data_collection_core data_collection_recorder data_collection_recap_recorder
   exec ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py "$@"
 }
 
