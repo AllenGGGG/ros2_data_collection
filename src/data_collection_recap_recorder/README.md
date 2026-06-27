@@ -11,7 +11,7 @@ no-subtask **recap 推理 rollout** 专用数采包：与 `data_collection_recor
 | `/scan/success` | 不录制 | 录制（写入 `state[16]` 对齐） |
 | 推理联动 | 无 | launch 可一并启动推理脚本 |
 | 13/14 | 开/停录制 | 开/停录制 |
-| 15/16 | 不处理 | 录制中切换 `/intervention`，不中断 MCAP |
+| 30/31 | 不处理 | 录制中切换 `/intervention`，不中断 MCAP |
 
 普通数采请继续用：
 
@@ -23,13 +23,13 @@ ros2 launch data_collection_recorder mcap_recorder.launch.py
 
 ```text
 VR 手柄
-  └─ xr_target_node  ──发布──► /xr/controller_state (13/14/15/16)
+  └─ xr_target_node  ──发布──► /xr/controller_state (13/14/30/31)
                                     │
             ┌───────────────────────┼───────────────────────┐
             ▼                       ▼                       ▼
    recap_mcap_recorder      no-subtask 推理脚本        arms_target_manager
-   (13/14 开停录)           (15/16 暂停/恢复推理)       (VR 遥操 pose/夹爪)
-   (15/16 写 intervention)
+   (13/14 开停录)           (30/31 暂停/恢复推理)       (VR 遥操 pose/夹爪)
+   (30/31 写 intervention)
 ```
 
 控制码约定（与 `data_collection_core/constants.py` 一致）：
@@ -38,14 +38,14 @@ VR 手柄
 | --- | --- | --- | --- |
 | 左侧键 + 左前键 | `13` | 开始录制 episode | 无影响 |
 | 右侧键 + 右前键 | `14` | 停止录制并落盘 | 无影响 |
-| 左侧键 + X | `15` | 继续录，`/intervention=0` | 恢复推理，开始发动作/夹爪 |
-| 右侧键 + A | `16` | 继续录，`/intervention=1` | 暂停推理，停止发动作/夹爪 |
+| 左侧键 + X | `30` | 继续录，`/intervention=0` | 恢复推理，开始发动作/夹爪 |
+| 右侧键 + A | `31` | 继续录，`/intervention=1` | 暂停推理，停止发动作/夹爪 |
 | 右摇杆（接管） | — | 继续录 | 人工遥操（由 `arms_target_manager` 控制） |
 
 要点：
 
-- **开始数采（13）不会自动开始推理**。推理进程在 launch 时加载模型一次，但默认 `start_inference_enabled: false`，需 VR 发 `15` 才开始发动作。
-- **暂停推理（16）不会卸载模型**，只是推理侧 `_inference_enabled=false`，清空 action buffer，不再发布 target/夹爪。
+- **开始数采（13）不会自动开始推理**。推理进程在 launch 时加载模型一次，但默认 `start_inference_enabled: false`，需 VR 发 `30` 才开始发动作。
+- **暂停推理（31）不会卸载模型**，只是推理侧 `_inference_enabled=false`，清空 action buffer，不再发布 target/夹爪。
 - **推理时 VR 是否发夹爪** 由机器人侧 `arms_target_manager` 仲裁；本包只保证推理侧在暂停时不发。
 
 ## 目录结构
@@ -76,7 +76,7 @@ pistar06_inference_node:
     action_mode: delta
     rtc_mode: xiaomi_overlap
     scan_success_topic: /scan/success
-    start_inference_enabled: false   # launch 后先暂停，等 VR 发 15
+    start_inference_enabled: false   # launch 后先暂停，等 VR 发 30
     intervention_value: 1
 ```
 
@@ -217,11 +217,11 @@ python -m no_subtask_rollout_converter \
 
 - 常见原因：推理与 `arms_target_manager` / `rviz` 同时发布 `/left_gripper_controller/target_command`。
 - 检查：`ros2 topic info -v /left_gripper_controller/target_command`
-- 推理暂停（16）后推理侧应停止发布；若仍抖动，需在机器人遥操侧根据 `15/16` 做控制权切换。
+- 推理暂停（31）后推理侧应停止发布；若仍抖动，需在机器人遥操侧根据 `30/31` 做控制权切换。
 
-**按 15/16 后录制被意外停止**
+**按 30/31 后录制被意外停止**
 
-- 确认没有同时跑旧的 `multi_subscriber` 或错误版本的 recorder（曾把 15/16 当成 14/13）。
+- 确认没有同时跑旧的 `multi_subscriber` 或错误版本的 recorder（曾把 30/31 当成 14/13）。
 - recap 路径应只跑本包的 `recap_mcap_recorder` 或 `recap_inference_collection.launch.py`。
 
 **推理一启动就抢夹爪**

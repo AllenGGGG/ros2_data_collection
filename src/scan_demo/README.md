@@ -82,6 +82,34 @@ bash stop_all.sh && bash start_matrix220_ros2.sh
 
 旧节点 `matrix220_scan_bridge` 必须关掉。
 
+## 若启动后运控报 Zenoh 时间戳错误
+
+如果运控日志里出现类似：
+
+```text
+zenoh ... incoming timestamp ... exceeding delta 500ms is rejected
+```
+
+这通常不是扫码节点给机械臂发了控制命令，而是 ROS/Zenoh 参与通信的主机时间相差超过约
+500ms。扫码节点加入 ROS 网络后会开始发布 `/scan/code`、`/scan/success`，如果任一主机时钟
+漂移，Zenoh 可能拒收数据；随后运控侧可能因为通信/写周期异常触发 emergency brake。
+
+在所有 ROS 主机上检查：
+
+```bash
+date -Ins
+timedatectl status | sed -n '/System clock synchronized/p;/NTP service/p'
+```
+
+处理建议：
+
+```bash
+sudo timedatectl set-ntp true
+sudo systemctl restart systemd-timesyncd 2>/dev/null || sudo systemctl restart chrony
+```
+
+等各机器 UTC 时间差小于 100ms 后，重新启动运控，再启动 `./quick.start 3`。
+
 ## 无扫码器
 
 ```bash

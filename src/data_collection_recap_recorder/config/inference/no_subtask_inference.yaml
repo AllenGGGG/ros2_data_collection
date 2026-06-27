@@ -1,14 +1,14 @@
 pistar06_inference_node:
   ros__parameters:
     # Put the no-subtask policy checkpoint/pretrained_model path here.
-    model_id: /home/zihang/workspace/chekp/no_subtask/060000_PPU/pretrained_model
+    model_id: /home/liweile/WAIC/ckpt/ppu06000/pretrained_model
     device: cuda
     action_mode: delta
     rtc_mode: xiaomi_overlap
     scan_success_topic: /scan/success
 
     # Recap launch loads the model once but starts in paused mode.
-    # /xr/controller_state=15 resumes inference; 16 pauses it.
+    # /xr/controller_state=30 resumes inference; 31 pauses it.
     start_inference_enabled: false
 
     # Keep no-subtask schema: scan_success only lives in observation.state[16].

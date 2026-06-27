@@ -1,9 +1,83 @@
+import os
+from pathlib import Path
+
+import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
+
+
+def _launch_value(context, name):
+    return LaunchConfiguration(name).perform(context).strip()
+
+
+def _load_inference_launch_config(config_file):
+    path = Path(config_file).expanduser()
+    if not path.is_file():
+        raise RuntimeError(f'inference_launch_config_file does not exist: {path}')
+    with path.open('r', encoding='utf-8') as stream:
+        data = yaml.safe_load(stream) or {}
+    if not isinstance(data, dict):
+        raise RuntimeError(f'{path}: launch config must be a mapping')
+    return {
+        key: str(value).strip()
+        for key, value in data.items()
+        if value is not None and str(value).strip()
+    }
+
+
+def _make_inference_process(context):
+    run_inference = IfCondition(LaunchConfiguration('run_inference')).evaluate(context)
+    if not run_inference:
+        return []
+
+    inference_params_file = _launch_value(context, 'inference_params_file')
+    inference_launch_config_file = _launch_value(context, 'inference_launch_config_file')
+    launch_config = _load_inference_launch_config(inference_launch_config_file)
+    python_executable = (
+        _launch_value(context, 'python_executable')
+        or launch_config.get('python_executable')
+        or 'python3'
+    )
+    inference_script = (
+        _launch_value(context, 'inference_script')
+        or launch_config.get('inference_script')
+    )
+    if not inference_script:
+        raise RuntimeError(
+            'inference_script is empty. Set inference_script in '
+            f'{inference_launch_config_file}, or pass inference_script:=...'
+        )
+    if not Path(inference_script).expanduser().is_file():
+        raise RuntimeError(f'inference_script does not exist: {inference_script}')
+    python_path = launch_config.get('python_path', '')
+    additional_env = {}
+    if python_path:
+        python_path = str(Path(python_path).expanduser())
+        if not Path(python_path).is_dir():
+            raise RuntimeError(f'python_path does not exist: {python_path}')
+        existing_python_path = os.environ.get('PYTHONPATH', '')
+        additional_env['PYTHONPATH'] = (
+            python_path
+            if not existing_python_path
+            else python_path + os.pathsep + existing_python_path
+        )
+
+    return [
+        ExecuteProcess(
+            output='screen',
+            additional_env=additional_env,
+            cmd=[
+                python_executable,
+                inference_script,
+                '--ros-args',
+                '--params-file', inference_params_file,
+            ],
+        )
+    ]
 
 
 def generate_launch_description():
@@ -13,21 +87,19 @@ def generate_launch_description():
     intervention_topic = LaunchConfiguration('intervention_topic')
     intervention_publish_hz = LaunchConfiguration('intervention_publish_hz')
 
-    run_inference = LaunchConfiguration('run_inference')
-    python_executable = LaunchConfiguration('python_executable')
-    inference_script = LaunchConfiguration('inference_script')
     inference_params_file = LaunchConfiguration('inference_params_file')
 
-    default_inference_script = (
-        '/home/zihang/workspace/chekp/IsaacSim-ros_workspaces/jazzy_ws/src/isaac_tutorials/scripts/'
-        'pistar06/post_train/trajs683_delta/'
-        'pistar06_inference_post_train_trajs683_delta_speedup_2x_chunksize_35_async_scan_runtime.py'
-    )
     default_inference_params_file = PathJoinSubstitution([
         FindPackageShare('data_collection_recap_recorder'),
         'config',
         'inference',
         'no_subtask_inference.yaml',
+    ])
+    default_inference_launch_config_file = PathJoinSubstitution([
+        FindPackageShare('data_collection_recap_recorder'),
+        'config',
+        'inference',
+        'no_subtask_launch.yaml',
     ])
 
     return LaunchDescription([
@@ -63,13 +135,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'python_executable',
-            default_value='python3',
-            description='Python executable used to run the inference script.',
+            default_value='',
+            description='Override Python executable. Empty = use inference launch config YAML.',
         ),
         DeclareLaunchArgument(
             'inference_script',
-            default_value=default_inference_script,
-            description='Path to the no-subtask inference runtime script.',
+            default_value='',
+            description='Override inference runtime script. Empty = use inference launch config YAML.',
+        ),
+        DeclareLaunchArgument(
+            'inference_launch_config_file',
+            default_value=default_inference_launch_config_file,
+            description='YAML file containing python_executable and inference_script.',
         ),
         DeclareLaunchArgument(
             'inference_params_file',
@@ -89,14 +166,5 @@ def generate_launch_description():
                 'intervention_publish_hz': intervention_publish_hz,
             }],
         ),
-        ExecuteProcess(
-            condition=IfCondition(run_inference),
-            output='screen',
-            cmd=[
-                python_executable,
-                inference_script,
-                '--ros-args',
-                '--params-file', inference_params_file,
-            ],
-        ),
+        OpaqueFunction(function=_make_inference_process),
     ])

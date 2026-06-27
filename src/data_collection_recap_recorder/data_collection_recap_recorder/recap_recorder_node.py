@@ -25,7 +25,7 @@ DEFAULT_INTERVENTION_TOPIC = '/intervention'
 class RecapMcapRecorderNode(McapRecorderNode):
     """MCAP recorder for recap rollout collection.
 
-    Unlike the base recorder, this node treats /xr/controller_state 15/16 as
+    Unlike the base recorder, this node treats /xr/controller_state 30/31 as
     inference-resume/inference-pause events while an episode is recording and
     publishes a continuous /intervention stream for converter alignment.
     """

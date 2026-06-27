@@ -31,20 +31,36 @@ source_ros() {
     echo "错误: 找不到 ${ros_setup}。请设置 ROS_DISTRO，或先安装 ROS 2。" >&2
     exit 1
   fi
-  # shellcheck source=/dev/null
-  source "${ros_setup}"
+  source_setup "${ros_setup}"
 }
 
 source_workspace() {
   if [[ -f "${ROOT}/install/setup.bash" ]]; then
-    # shellcheck source=/dev/null
-    source "${ROOT}/install/setup.bash"
+    source_setup "${ROOT}/install/setup.bash"
   elif [[ -f "${ROOT}/install/local_setup.bash" ]]; then
-    # shellcheck source=/dev/null
-    source "${ROOT}/install/local_setup.bash"
+    source_setup "${ROOT}/install/local_setup.bash"
   else
     echo "错误: 找不到工作区 install/setup.bash。请先在仓库根目录运行 colcon build。" >&2
     exit 1
+  fi
+}
+
+source_setup() {
+  local setup_file="$1"
+  local restore_nounset=false
+
+  case "$-" in
+    *u*)
+      restore_nounset=true
+      set +u
+      ;;
+  esac
+
+  # shellcheck source=/dev/null
+  source "${setup_file}"
+
+  if [[ "${restore_nounset}" == true ]]; then
+    set -u
   fi
 }
 
@@ -63,8 +79,23 @@ run_mcap_recorder() {
   exec ros2 launch data_collection_recorder mcap_recorder.launch.py "$@"
 }
 
+print_scan_runtime_diagnostics() {
+  echo "扫码启动前检查:"
+  echo "  ROS_DISTRO=${ROS_DISTRO:-${ROS_DISTRO_NAME}}"
+  echo "  RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-<未设置>}"
+  echo "  ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-<未设置>}"
+  if command -v timedatectl >/dev/null 2>&1; then
+    timedatectl status 2>/dev/null |
+      sed -n '/System clock synchronized/p;/NTP service/p' |
+      sed 's/^/  /' || true
+  fi
+  echo "  提示: 若运控端出现 zenoh incoming timestamp exceeding delta 500ms，"
+  echo "        请同步所有 ROS 主机时间后再启动扫码/运控。"
+}
+
 run_scan_demo() {
   source_ros
+  print_scan_runtime_diagnostics
   cd "${ROOT}/src/scan_demo"
   bash stop_all.sh
   exec bash start_matrix220_ros2.sh "$@"
