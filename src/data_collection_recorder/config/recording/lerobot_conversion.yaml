@@ -1,0 +1,20 @@
+lerobot_conversion:
+  # Set true to convert MCAP episodes into a LeRobot dataset in the background.
+  enabled: false
+
+  # Existing converter entrypoint. It accepts:
+  #   --input-root <episode_dir> --output-dir <lerobot_dataset_dir>
+  script_path: ~/dataset_convert2lerobot/convert.sh
+
+  # Destination LeRobot dataset directory. Existing compatible datasets are appended.
+  output_dir: ~/data/lerobot_data
+
+  # Optional override for convert.sh ENV_NAME. Empty uses convert.sh default.
+  env_name: ""
+
+  # Optional arguments appended after --input-root/--output-dir.
+  # Example: ["--min-mcap-size-mb", "0"]
+  extra_args: []
+
+  # Keep this at 1 unless the machine has enough GPU/IO headroom for parallel conversion.
+  max_parallel: 1

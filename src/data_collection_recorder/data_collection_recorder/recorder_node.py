@@ -1,22 +1,29 @@
+import shutil
 import sys
 import threading
+from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
-from std_msgs.msg import Empty, Float32MultiArray, Int32
+from std_msgs.msg import Empty, Int32
 from data_collection_core.bag_ros2_cli import BagRos2CliBackend
 from data_collection_core.episode_uploader import EpisodeUploader
+from data_collection_core.lerobot_conversion_config import (
+    LeRobotConversionConfig,
+    load_lerobot_conversion_config,
+)
+from data_collection_core.lerobot_converter import LeRobotEpisodeConverter
 from data_collection_core.upload_config import UploadConfig, load_upload_config
 from data_collection_core.constants import (
     DEFAULT_CONTROL_TOPIC,
     RECORD_STOP_TOPIC,
-    SCAN_SUCCESS_TOPIC,
     START_RECORDING_CODE,
     STOP_RECORDING_CODE,
 )
@@ -38,13 +45,6 @@ _BG_GREEN = '\033[42;30m'
 _BG_YELLOW = '\033[43;30m'
 _BG_CYAN = '\033[46;30m'
 _BG_RED = '\033[41;97m'
-
-
-def scan_success_is_active(msg: Float32MultiArray) -> bool:
-    """True when /scan/success represents a successful scan (all dims >= 0.5)."""
-    if not msg.data:
-        return False
-    return all(value >= 0.5 for value in msg.data)
 
 
 def message_timestamp_ns(msg: Any, fallback_ns: int) -> int:
@@ -91,6 +91,7 @@ class McapRecorderNode(Node):
         self.declare_parameter('control_topic', DEFAULT_CONTROL_TOPIC)
         self.declare_parameter('storage_id', 'mcap')
         self.declare_parameter('storage_preset_profile', 'zstd_small')
+        self.declare_parameter('lerobot_conversion_enabled', False)
 
         self.control_topic = str(self.get_parameter('control_topic').value)
         self.profile_path = self._resolve_profile_path()
@@ -107,14 +108,19 @@ class McapRecorderNode(Node):
         self._save_threads_lock = threading.Lock()
         self._uploader: Optional[EpisodeUploader] = None
         self._upload_config: Optional[UploadConfig] = None
-        self._scan_success_is_active = False
+        self._lerobot_converter: Optional[LeRobotEpisodeConverter] = None
+        self._lerobot_conversion_config: Optional[LeRobotConversionConfig] = None
+        self._convert_after_save_episode_ids: set[str] = set()
+        self._episode_waiting_for_next_collection: Optional[EpisodeInfo] = None
+        self._last_stopped_episode: Optional[EpisodeInfo] = None
 
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
-        self.scan_callback_group = ReentrantCallbackGroup()
         self._record_stop_publisher = self.create_publisher(Empty, RECORD_STOP_TOPIC, 10)
         self._create_control_subscription()
-        self._create_scan_subscription()
-        self._init_uploader()
+        # SSH 自动上传暂时停用，先只做本地 MCAP 落盘。
+        # self._init_uploader()
+        self._init_lerobot_converter()
+        self._start_stdin_listener()
 
         self.get_logger().debug(
             f'mcap_recorder ready output_dir={self.output_dir} profile={self.profile_path}'
@@ -122,11 +128,17 @@ class McapRecorderNode(Node):
         ready_lines = [
             f'📂 保存目录：{self.output_dir.expanduser()}',
             '🎮 开始采集 → 控制器 13',
-            '🛑 结束采集 → 控制器 14 或 /scan/success 变 0',
+            '🛑 结束采集 → 控制器 14',
+            '🗑️  丢弃上一段 → 本终端输入 d 或 discard 回车',
         ]
         if self._uploader is not None:
             ready_lines.append(
                 f'☁️  落盘后将自动上传 → {self._upload_config.user}@{self._upload_config.host}'
+            )
+        if self._lerobot_converter is not None and self._lerobot_conversion_config is not None:
+            ready_lines.append(
+                f'🤖  确认下一段结束后转 LeRobot → '
+                f'{self._lerobot_conversion_config.output_path}'
             )
         _collector_card(
             '📡  数采程序已就绪',
@@ -145,6 +157,10 @@ class McapRecorderNode(Node):
     def _resolve_upload_config_path(self) -> Path:
         share_dir = Path(get_package_share_directory('data_collection_recorder'))
         return share_dir / 'config' / 'recording' / 'upload.yaml'
+
+    def _resolve_lerobot_conversion_config_path(self) -> Path:
+        share_dir = Path(get_package_share_directory('data_collection_recorder'))
+        return share_dir / 'config' / 'recording' / 'lerobot_conversion.yaml'
 
     def _init_uploader(self) -> None:
         try:
@@ -165,6 +181,40 @@ class McapRecorderNode(Node):
             self._upload_config = None
             self.get_logger().warn(
                 f'Episode upload disabled due to config error (recording unaffected): {exc}'
+            )
+
+    def _init_lerobot_converter(self) -> None:
+        try:
+            config_path = self._resolve_lerobot_conversion_config_path()
+            config = load_lerobot_conversion_config(config_path)
+            enabled_override_raw = self.get_parameter('lerobot_conversion_enabled').value
+            enabled_override = str(enabled_override_raw).strip().lower()
+            if isinstance(enabled_override_raw, bool):
+                config = replace(config, enabled=enabled_override_raw)
+            elif enabled_override in ('true', '1', 'yes', 'on'):
+                config = replace(config, enabled=True)
+            elif enabled_override in ('false', '0', 'no', 'off'):
+                config = replace(config, enabled=False)
+            elif enabled_override not in ('', 'config', 'default'):
+                self.get_logger().warn(
+                    'Invalid lerobot_conversion_enabled value '
+                    f'{enabled_override!r}; using config file'
+                )
+            if not config.enabled:
+                self.get_logger().info('LeRobot conversion disabled in lerobot_conversion.yaml')
+                return
+            self._lerobot_conversion_config = config
+            self._lerobot_converter = LeRobotEpisodeConverter(
+                config=config,
+                on_finished=self._on_lerobot_conversion_finished,
+            )
+            self._lerobot_converter.start()
+        except Exception as exc:
+            self._lerobot_conversion_config = None
+            self._lerobot_converter = None
+            self.get_logger().warn(
+                f'LeRobot conversion disabled due to config error '
+                f'(recording unaffected): {exc}'
             )
 
     def _resolve_output_dir(self) -> Path:
@@ -191,33 +241,11 @@ class McapRecorderNode(Node):
             callback_group=self.control_callback_group,
         )
 
-    def _create_scan_subscription(self) -> None:
-        self.create_subscription(
-            Float32MultiArray,
-            SCAN_SUCCESS_TOPIC,
-            self._handle_scan_success,
-            QoSProfile(depth=10),
-            callback_group=self.scan_callback_group,
-        )
-        self.get_logger().info(
-            f'Bound stop recording to {SCAN_SUCCESS_TOPIC} 1->0 while recording'
-        )
-
     def _publish_record_stop_signal(self) -> None:
-        self._record_stop_publisher.publish(Empty())
-
-    def _handle_scan_success(self, msg: Float32MultiArray) -> None:
-        is_active = scan_success_is_active(msg)
-        was_active = self._scan_success_is_active
-        self._scan_success_is_active = is_active
-        if not self.session.is_recording:
-            return
-        if was_active and not is_active:
-            timestamp_ns = self.get_clock().now().nanoseconds
-            self.get_logger().info(
-                f'{SCAN_SUCCESS_TOPIC} 1->0 while recording; stopping episode'
-            )
-            self._stop_recording(timestamp_ns, source='scan_success')
+        try:
+            self._record_stop_publisher.publish(Empty())
+        except Exception as exc:
+            self.get_logger().warn(f'Failed to publish record stop signal: {exc}')
 
     def _handle_control_message(self, msg: Any) -> None:
         timestamp_ns = message_timestamp_ns(msg, self.get_clock().now().nanoseconds)
@@ -233,6 +261,59 @@ class McapRecorderNode(Node):
             self._save_threads = [thread for thread in self._save_threads if thread.is_alive()]
             return len(self._save_threads)
 
+    def _commit_last_stopped_episode_for_conversion(self) -> None:
+        episode = self._last_stopped_episode
+        if episode is None:
+            return
+        self._last_stopped_episode = None
+        if self._lerobot_converter is None:
+            return
+        self._episode_waiting_for_next_collection = episode
+        _collector_card(
+            '🤖  已确认保留上一段',
+            [
+                f'🆔  {episode.episode_id}',
+                '⏳  等下一段采集结束后再开始 LeRobot 转换',
+            ],
+            headline_bg=_BG_CYAN,
+            body_color=_CYAN,
+        )
+
+    def _confirm_previous_episode_for_conversion(self) -> None:
+        episode = self._episode_waiting_for_next_collection
+        if episode is None or self._lerobot_converter is None:
+            return
+        self._episode_waiting_for_next_collection = None
+        thread_name = f'mcap-save-{episode.episode_id}'
+        with self._save_threads_lock:
+            still_saving = any(
+                thread.name == thread_name and thread.is_alive()
+                for thread in self._save_threads
+            )
+        if still_saving:
+            self._convert_after_save_episode_ids.add(episode.episode_id)
+            return
+        self._enqueue_lerobot_conversion(episode)
+
+    def _commit_final_episode_for_conversion_on_shutdown(self) -> None:
+        if self._lerobot_converter is None:
+            return
+        episode = self._last_stopped_episode or self._episode_waiting_for_next_collection
+        if episode is None:
+            return
+        thread_name = f'mcap-save-{episode.episode_id}'
+        with self._save_threads_lock:
+            still_saving = any(
+                thread.name == thread_name and thread.is_alive()
+                for thread in self._save_threads
+            )
+        if still_saving:
+            self._convert_after_save_episode_ids.add(episode.episode_id)
+            return
+        self._last_stopped_episode = None
+        self._episode_waiting_for_next_collection = None
+        self._enqueue_lerobot_conversion(episode)
+
     def _start_recording(self, timestamp_ns: int) -> None:
         if self.session.is_recording:
             self._collector_warn('⚠️  已在采集中，无需重复按开始')
@@ -240,6 +321,7 @@ class McapRecorderNode(Node):
 
         pending = self._pending_save_count()
         try:
+            self._commit_last_stopped_episode_for_conversion()
             episode = self.session.start(timestamp_ns=timestamp_ns)
             backend = self._new_backend()
             backend.start(
@@ -260,9 +342,8 @@ class McapRecorderNode(Node):
 
     def _stop_recording(self, timestamp_ns: int, *, source: str = 'controller') -> None:
         if not self.session.is_recording:
-            if source != 'scan_success':
-                self._publish_record_stop_signal()
-                self._collector_warn('⚠️  当前没有在采集，无需按结束')
+            self._publish_record_stop_signal()
+            self._collector_warn('⚠️  当前没有在采集，无需按结束')
             return
 
         self._publish_record_stop_signal()
@@ -278,7 +359,9 @@ class McapRecorderNode(Node):
                 return
 
             record_process = backend.detach_process() if backend is not None else None
+            self._last_stopped_episode = episode
             self._show_stop_handoff(episode)
+            self._confirm_previous_episode_for_conversion()
 
             if record_process is None:
                 self._show_background_save_complete(episode, success=True)
@@ -336,6 +419,9 @@ class McapRecorderNode(Node):
         )
         if save_ok:
             self._enqueue_episode_upload(episode)
+            if episode.episode_id in self._convert_after_save_episode_ids:
+                self._convert_after_save_episode_ids.discard(episode.episode_id)
+                self._enqueue_lerobot_conversion(episode)
 
     def _enqueue_episode_upload(self, episode: EpisodeInfo) -> None:
         if self._uploader is None:
@@ -354,6 +440,26 @@ class McapRecorderNode(Node):
         except Exception as exc:
             self.get_logger().warn(
                 f'Failed to enqueue upload for {episode.episode_id} '
+                f'(recording unaffected): {exc}'
+            )
+
+    def _enqueue_lerobot_conversion(self, episode: EpisodeInfo) -> None:
+        if self._lerobot_converter is None:
+            return
+        try:
+            if self._lerobot_converter.enqueue(episode.episode_dir):
+                _collector_card(
+                    '🤖  已加入 LeRobot 转换队列',
+                    [
+                        f'🆔  {episode.episode_id}',
+                        '🧵  后台转换中，不影响当前采集',
+                    ],
+                    headline_bg=_BG_CYAN,
+                    body_color=_CYAN,
+                )
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Failed to enqueue LeRobot conversion for {episode.episode_id} '
                 f'(recording unaffected): {exc}'
             )
 
@@ -376,6 +482,35 @@ class McapRecorderNode(Node):
             f'⚠️  上传失败  ·  {episode_id}',
             [
                 '💾  本地数据仍在，采集可继续',
+                f'📁  {episode_dir.resolve()}',
+                f'💥  {error_message or "未知错误"}',
+            ],
+            headline_bg=_BG_YELLOW,
+            body_color=_YELLOW,
+        )
+
+    def _on_lerobot_conversion_finished(
+        self,
+        episode_dir: Path,
+        success: bool,
+        error_message: str,
+    ) -> None:
+        episode_id = episode_dir.name
+        if success and self._lerobot_conversion_config is not None:
+            _collector_card(
+                f'🤖  LeRobot 转换完成  ·  {episode_id}',
+                [
+                    f'📁  {self._lerobot_conversion_config.output_path}',
+                    f'📝  日志：{episode_dir.resolve() / "lerobot_conversion.log"}',
+                ],
+                headline_bg=_BG_GREEN,
+                body_color=_GREEN,
+            )
+            return
+        _collector_card(
+            f'⚠️  LeRobot 转换失败  ·  {episode_id}',
+            [
+                '💾  MCAP 本地数据仍在，采集可继续',
                 f'📁  {episode_dir.resolve()}',
                 f'💥  {error_message or "未知错误"}',
             ],
@@ -453,6 +588,70 @@ class McapRecorderNode(Node):
                 body_color=_RED,
             )
 
+    def _start_stdin_listener(self) -> None:
+        thread = threading.Thread(
+            target=self._stdin_listen_loop,
+            name='mcap-stdin-listener',
+            daemon=True,
+        )
+        thread.start()
+
+    def _stdin_listen_loop(self) -> None:
+        input_stream = sys.stdin
+        stream_context = nullcontext(input_stream)
+        try:
+            if not input_stream.isatty():
+                stream_context = open('/dev/tty', 'r', encoding='utf-8')
+        except OSError:
+            stream_context = nullcontext(input_stream)
+
+        with stream_context as stream:
+            for line in stream:
+                command = line.strip().lower()
+                if command in ('d', 'discard'):
+                    self._handle_discard_command()
+
+    def _handle_discard_command(self) -> None:
+        episode = self._last_stopped_episode
+        if episode is None:
+            self._collector_warn('⚠️  没有可丢弃的段（还没结束采集，或已丢弃/已开始下一段）')
+            return
+
+        thread_name = f'mcap-save-{episode.episode_id}'
+        with self._save_threads_lock:
+            still_saving = any(
+                thread.name == thread_name and thread.is_alive()
+                for thread in self._save_threads
+            )
+        if still_saving:
+            self._collector_warn(f'⏳  {episode.episode_id} 仍在后台保存，请稍后再输入 d/discard')
+            return
+
+        self._last_stopped_episode = None
+        self._episode_waiting_for_next_collection = None
+        self._convert_after_save_episode_ids.discard(episode.episode_id)
+        self._discard_episode(episode)
+
+    def _discard_episode(self, episode: EpisodeInfo) -> None:
+        episode_dir = episode.episode_dir.resolve()
+        try:
+            if episode_dir.is_dir():
+                shutil.rmtree(episode_dir)
+            if self._uploader is not None:
+                self._uploader.discard(episode_dir)
+            _collector_card(
+                f'🗑️  已丢弃  ·  {episode.episode_id}',
+                [
+                    f'📁  {episode_dir}  已删除',
+                    '👉  不影响之前或之后的采集',
+                ],
+                headline_bg=_BG_YELLOW,
+                body_color=_YELLOW,
+            )
+        except Exception as exc:
+            self.get_logger().error(f'Failed to discard {episode.episode_id}: {exc}')
+            self._collector_warn(f'❌  丢弃失败：{exc}')
+
     def _collector_warn(self, message: str) -> None:
         _collector_line(_colorize(f'  {message}', _BG_YELLOW, _YELLOW))
 
@@ -472,9 +671,24 @@ class McapRecorderNode(Node):
                 _colorize(f'  ⏳  程序退出中，等待 {pending} 段后台保存…', _MAGENTA)
             )
             self._wait_for_background_saves()
+            for episode_id in list(self._convert_after_save_episode_ids):
+                if self._last_stopped_episode and self._last_stopped_episode.episode_id == episode_id:
+                    self._enqueue_lerobot_conversion(self._last_stopped_episode)
+                    self._last_stopped_episode = None
+                if (
+                    self._episode_waiting_for_next_collection
+                    and self._episode_waiting_for_next_collection.episode_id == episode_id
+                ):
+                    self._enqueue_lerobot_conversion(self._episode_waiting_for_next_collection)
+                    self._episode_waiting_for_next_collection = None
+                self._convert_after_save_episode_ids.discard(episode_id)
+        self._commit_final_episode_for_conversion_on_shutdown()
         if self._uploader is not None:
             _collector_line(_colorize('  ⏳  等待后台上传任务结束…', _MAGENTA))
             self._uploader.shutdown()
+        if self._lerobot_converter is not None:
+            _collector_line(_colorize('  ⏳  等待 LeRobot 后台转换任务结束…', _MAGENTA))
+            self._lerobot_converter.shutdown()
         return super().destroy_node()
 
 
@@ -492,7 +706,8 @@ def main(args=None) -> None:
         executor.shutdown()
         executor.remove_node(node)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

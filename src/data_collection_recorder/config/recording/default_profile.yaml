@@ -1,4 +1,4 @@
-output_dir: /home/liweile/train/test_data
+output_dir: /home/fiveages/data/mcap_data/
 default_qos_depth: 10
 
 topics:
@@ -9,10 +9,10 @@ topics:
     qos_depth: 10
   - name: /camera_left_wrist/color/image_raw/compressed
     type: sensor_msgs/msg/CompressedImage
-    qos_depth: 10
+    qos_depth: 42
   - name: /camera_right_wrist/color/image_raw/compressed
     type: sensor_msgs/msg/CompressedImage
-    qos_depth: 10
+    qos_depth: 42
   - name: /joint_states
     type: sensor_msgs/msg/JointState
     qos_depth: 200
@@ -37,9 +37,18 @@ topics:
   - name: /xr/controller_state
     type: std_msgs/msg/Int32
     qos_depth: 10
-  - name: /scan/success
-    type: std_msgs/msg/Float32MultiArray
+  - name: /body_current_pose
+    type: geometry_msgs/msg/PoseStamped
     qos_depth: 10
-  # - name: /scan/code
-  #   type: std_msgs/msg/String
-  #   qos_depth: 10
+  - name: /left_hand_controller/target_command
+    type: std_msgs/msg/Int32
+    qos_depth: 10
+  - name: /left_hand_controller/target_percent
+    type: std_msgs/msg/Float64
+    qos_depth: 10
+  - name: /right_hand_controller/target_command
+    type: std_msgs/msg/Int32
+    qos_depth: 10
+  - name: /right_hand_controller/target_percent
+    type: std_msgs/msg/Float64
+    qos_depth: 10

@@ -15,7 +15,7 @@ class UploadConfig:
     identity_file: str = ''
     retry_count: int = 3
     max_parallel: int = 1
-    scan_on_startup: bool = True
+    check_pending_on_startup: bool = True
 
     def validate(self) -> None:
         if not self.enabled:
@@ -55,5 +55,5 @@ def load_upload_config(path: Path) -> UploadConfig:
         identity_file=str(section.get('identity_file', '')).strip(),
         retry_count=int(section.get('retry_count', 3)),
         max_parallel=max(1, int(section.get('max_parallel', 1))),
-        scan_on_startup=bool(section.get('scan_on_startup', True)),
+        check_pending_on_startup=bool(section.get('check_pending_on_startup', True)),
     )

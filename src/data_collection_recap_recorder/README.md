@@ -8,7 +8,6 @@ no-subtask **recap 推理 rollout** 专用数采包：与 `data_collection_recor
 | --- | --- | --- |
 | 用途 | 专家遥操 / 通用 MCAP 数采 | recap 推理 rollout + 人工接管 |
 | `/intervention` | 不录制 | 录制并持续发布 |
-| `/scan/success` | 不录制 | 录制（写入 `state[16]` 对齐） |
 | 推理联动 | 无 | launch 可一并启动推理脚本 |
 | 13/14 | 开/停录制 | 开/停录制 |
 | 30/31 | 不处理 | 录制中切换 `/intervention`，不中断 MCAP |
@@ -75,7 +74,6 @@ pistar06_inference_node:
     device: cuda
     action_mode: delta
     rtc_mode: xiaomi_overlap
-    scan_success_topic: /scan/success
     start_inference_enabled: false   # launch 后先暂停，等 VR 发 30
     intervention_value: 1
 ```
@@ -86,7 +84,7 @@ pistar06_inference_node:
 output_dir: ~/ros2_ws/recap_raw_datasets_mcap
 ```
 
-录制的关键 topic 包括：三路 compressed 相机、joint/pose、gripper command、`/scan/success`、`/xr/controller_state`、`/intervention`。
+录制的 topic 只包括：三路 compressed 相机、`/joint_states` 和 `/intervention`。
 
 输出 episode 结构：
 
@@ -143,9 +141,9 @@ ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py 
 ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py \
   inference_params_file:=/path/to/my_inference.yaml
 
-# 换推理脚本（例如 xiaomi_rtc wrapper）
+# 换推理脚本
 ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py \
-  inference_script:=/home/zihang/workspace/chekp/IsaacSim-ros_workspaces/jazzy_ws/src/isaac_tutorials/scripts/pistar06/post_train/trajs683_delta/pistar06_inference_post_train_trajs683_delta_speedup_2x_chunksize_35_async_scan_xiaomi_rtc.py
+  inference_script:=/path/to/no_subtask_inference_runtime.py
 
 # 只启动数采，不启动推理（推理已在别的终端跑着）
 ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py \
@@ -181,7 +179,7 @@ source /opt/ros/jazzy/setup.bash
 source /home/zihang/miniconda3/etc/profile.d/conda.sh
 conda activate lerobot_dev
 
-python3 jazzy_ws/src/isaac_tutorials/scripts/pistar06/post_train/trajs683_delta/pistar06_inference_post_train_trajs683_delta_speedup_2x_chunksize_35_async_scan_xiaomi_rtc.py \
+python3 /path/to/no_subtask_inference_runtime.py \
   --ros-args \
   --params-file /home/zihang/workspace/chekp/ros2_data_collection_YWL/install/data_collection_recap_recorder/share/data_collection_recap_recorder/config/inference/no_subtask_inference.yaml
 ```
@@ -198,18 +196,18 @@ python3 jazzy_ws/src/isaac_tutorials/scripts/pistar06/post_train/trajs683_delta/
 
 ## 转 LeRobot 数据集
 
-MCAP episode 用 `dataset_convert2lerobot/no_subtask_rollout_converter` 转换：
+MCAP episode 统一使用 `dataset_convert2lerobot/convert.sh` 转换：
 
 ```bash
-cd /home/zihang/workspace/chekp/dataset_convert2lerobot
-python -m no_subtask_rollout_converter \
-  --input-root /home/zihang/workspace/chekp/test_recap \
+cd /home/fiveages/dataset_convert2lerobot
+./convert.sh \
+  --input-root /path/to/recap_raw_datasets_mcap \
   --output-dir /path/to/lerobot_out \
   --episode-success auto \
-  --action-pose-mode delta
+  --intervention-default rollout
 ```
 
-`observation.intervention` 会与 bag 里 `/intervention` 对齐；`scan_success` 在 `observation.state[16]`，不作为独立 top-level feature。
+输出只包含 28 个有效关节角（2 个身体关节、14 个手臂关节、12 个手部关节），并补零到 PI0.5 的 32 维。`observation.intervention` 与 bag 中的 `/intervention` 对齐；任务成功/失败通过 `--episode-success` 或成功/失败目录写入 episode 级 `success` metadata。
 
 ## 排错
 
@@ -237,11 +235,4 @@ python -m no_subtask_rollout_converter \
 
 - 普通 MCAP 数采：`../data_collection_recorder/` 与仓库根目录 `README.md`
 - VR workflow 与历史 bug 说明：`../docs/fix_bug_data_collection_control_mechanis.md`
-- no-subtask 转换器：`../../../dataset_convert2lerobot/no_subtask_rollout_converter/README.md`
-cd /home/zihang/workspace/chekp/ros2_data_collection_YWL
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-
-ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py \
-  output_dir:=/home/zihang/workspace/chekp/test_recap \
-  python_executable:=/home/zihang/miniconda3/envs/lerobot_dev/bin/python3
+- LeRobot 转换器：`/home/fiveages/dataset_convert2lerobot/README.md`

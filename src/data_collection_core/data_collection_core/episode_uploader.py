@@ -32,6 +32,7 @@ class EpisodeUploader:
         self._workers: list[threading.Thread] = []
         self._stop_event = threading.Event()
         self._enqueued: set[str] = set()
+        self._discarded: set[str] = set()
         self._enqueued_lock = threading.Lock()
 
     def start(self) -> None:
@@ -51,9 +52,8 @@ class EpisodeUploader:
             )
             thread.start()
             self._workers.append(thread)
-        if self.config.scan_on_startup:
-            self._scan_pending_upload
-            
+        if self.config.check_pending_on_startup:
+            self._check_pending_uploads()
 
     def shutdown(self, timeout_sec: float = 300.0) -> None:
         if not self.config.enabled:
@@ -87,7 +87,21 @@ class EpisodeUploader:
     def pending_job_count(self) -> int:
         return self._job_queue.qsize()
 
-    def _scan_pending_uploads(self) -> None:
+    def discard(self, episode_dir: Path) -> None:
+        """Skip a queued/in-flight upload and best-effort remove the remote copy.
+
+        Runs synchronously on the caller's thread (the recorder's stdin listener),
+        so no new worker or queue is introduced for this rare, user-triggered action.
+        """
+        if not self.config.enabled:
+            return
+        episode_dir = episode_dir.resolve()
+        with self._enqueued_lock:
+            self._discarded.add(str(episode_dir))
+        remote_dir = f'{self.config.remote_target_prefix}/{episode_dir.name}'
+        self._remove_remote_dir(remote_dir)
+
+    def _check_pending_uploads(self) -> None:
         if not self.output_dir.is_dir():
             return
         for episode_dir in sorted(self.output_dir.iterdir()):
@@ -117,7 +131,11 @@ class EpisodeUploader:
                     return
                 continue
             try:
-                self._upload_episode(episode_dir)
+                episode_key = str(episode_dir.resolve())
+                with self._enqueued_lock:
+                    was_discarded = episode_key in self._discarded
+                if not was_discarded:
+                    self._upload_episode(episode_dir)
             except Exception as exc:
                 self._mark_failed(episode_dir, str(exc))
                 self._notify(episode_dir, False, str(exc))
@@ -188,6 +206,29 @@ class EpisodeUploader:
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or '').strip()
             raise RuntimeError(detail or 'failed to create remote directory')
+
+    def _remove_remote_dir(self, remote_dir: str) -> None:
+        # remote_dir is like user@host:/path/episode_id (no trailing slash)
+        if ':/' not in remote_dir:
+            return
+        _, remote_path = remote_dir.split(':', 1)
+        remote_path = remote_path.rstrip('/')
+        if not remote_path:
+            return
+        command = [
+            'ssh',
+            '-p',
+            str(self.config.port),
+            '-i',
+            str(self.config.identity_path),
+            '-o',
+            'BatchMode=yes',
+            '-o',
+            'StrictHostKeyChecking=accept-new',
+            f'{self.config.user}@{self.config.host}',
+            f'rm -rf {remote_path}',
+        ]
+        subprocess.run(command, capture_output=True, text=True, check=False)
 
     def _run_rsync(self, episode_dir: Path, remote_dir: str) -> None:
         if not episode_dir.is_dir():

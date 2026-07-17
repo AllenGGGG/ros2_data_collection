@@ -13,17 +13,19 @@ usage() {
 启动项:
   1  recap 数采节点              recap 推理 rollout 专用；只启动 recap_mcap_recorder
   2  普通 MCAP 数采              专家遥操 / 通用 MCAP；启动 mcap_recorder.launch.py
-  3  真实扫码节点 scan_demo      先清理旧扫码节点，再启动 Matrix220 与 /scan/success
-  4  legacy 旧版落盘             multi_subscriber；PNG + CSV fallback 路径
-  5  recap 一体化启动            recap 数采 + no-subtask 推理 launch
+  3  legacy 旧版落盘             multi_subscriber；PNG + CSV fallback 路径
+  4  recap 一体化启动            recap 数采 + no-subtask 推理 launch
   0  退出
 
 序号后面的额外参数会原样传给对应命令。
 默认会先 colcon build 相关包，确保 src/config 修改同步到 install。
 如需跳过编译: QUICK_START_SKIP_BUILD=1 ./quick.start <序号>
+LeRobot 自动转换可在启动普通 MCAP 数采时交互选择，也可用
+QUICK_START_LEROBOT_CONVERSION=true/false/config 预设。
 示例:
   ./quick.start 2 output_dir:=/tmp/raw_datasets_mcap
-  ./quick.start 4 --ros-args -p use_compressed_images:=true
+  ./quick.start 2 lerobot_conversion_enabled:=false
+  ./quick.start 3 --ros-args -p use_compressed_images:=true
 EOF
 }
 
@@ -95,31 +97,55 @@ run_recap_recorder() {
   exec ros2 run data_collection_recap_recorder recap_mcap_recorder "$@"
 }
 
+has_lerobot_conversion_arg() {
+  local arg
+  for arg in "$@"; do
+    case "${arg}" in
+      lerobot_conversion_enabled:=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+choose_lerobot_conversion_mode() {
+  if [[ -n "${QUICK_START_LEROBOT_CONVERSION:-}" ]]; then
+    printf '%s' "${QUICK_START_LEROBOT_CONVERSION}"
+    return
+  fi
+
+  if [[ ! -t 0 ]]; then
+    printf 'config'
+    return
+  fi
+
+  cat >&2 <<EOF
+
+LeRobot 自动转换（本次启动）:
+  1  关闭（推荐采集优先）
+  2  开启（后台低优先级转换）
+  3  跟随配置文件
+
+请选择 [1/2/3，默认 1]: 
+EOF
+  local choice
+  read -r choice
+  case "${choice}" in
+    2|on|ON|true|TRUE|yes|YES) printf 'true' ;;
+    3|config|CONFIG|default|DEFAULT) printf 'config' ;;
+    *) printf 'false' ;;
+  esac
+}
+
 run_mcap_recorder() {
   run_ros_package data_collection_core data_collection_recorder
-  exec ros2 launch data_collection_recorder mcap_recorder.launch.py "$@"
-}
-
-print_scan_runtime_diagnostics() {
-  echo "扫码启动前检查:"
-  echo "  ROS_DISTRO=${ROS_DISTRO:-${ROS_DISTRO_NAME}}"
-  echo "  RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-<未设置>}"
-  echo "  ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-<未设置>}"
-  if command -v timedatectl >/dev/null 2>&1; then
-    timedatectl status 2>/dev/null |
-      sed -n '/System clock synchronized/p;/NTP service/p' |
-      sed 's/^/  /' || true
+  if ! has_lerobot_conversion_arg "$@"; then
+    local conversion_mode
+    conversion_mode="$(choose_lerobot_conversion_mode)"
+    if [[ "${conversion_mode}" != "config" ]]; then
+      set -- "lerobot_conversion_enabled:=${conversion_mode}" "$@"
+    fi
   fi
-  echo "  提示: 若运控端出现 zenoh incoming timestamp exceeding delta 500ms，"
-  echo "        请同步所有 ROS 主机时间后再启动扫码/运控。"
-}
-
-run_scan_demo() {
-  source_ros
-  print_scan_runtime_diagnostics
-  cd "${ROOT}/src/scan_demo"
-  bash stop_all.sh
-  exec bash start_matrix220_ros2.sh "$@"
+  exec ros2 launch data_collection_recorder mcap_recorder.launch.py "$@"
 }
 
 run_multi_subscriber() {
@@ -139,9 +165,8 @@ choose() {
   case "${choice}" in
     1) run_recap_recorder "$@" ;;
     2) run_mcap_recorder "$@" ;;
-    3) run_scan_demo "$@" ;;
-    4) run_multi_subscriber "$@" ;;
-    5) run_recap_full_launch "$@" ;;
+    3) run_multi_subscriber "$@" ;;
+    4) run_recap_full_launch "$@" ;;
     0|q|Q|exit) exit 0 ;;
     -h|--help|help)
       usage

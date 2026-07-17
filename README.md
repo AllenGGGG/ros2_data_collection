@@ -8,12 +8,11 @@
 
 ## 当前入口
 
-本仓库现在保留两条录制路径，并附带扫码与上传模块：
+本仓库现在保留两条录制路径，并附带上传模块：
 
 | 模块 | 入口 | 是否 `colcon build` | 说明 |
 | --- | --- | --- | --- |
 | MCAP 新路径 | `data_collection_recorder/mcap_recorder` | ✅ 需要 | 控制节点启动原生 `ros2 bag record -s mcap` 全频录制 |
-| 真实扫码 | `src/scan_demo/start_matrix220_ros2.sh` | ❌ 不需要 | Matrix220 读码 + `/scan/success`；**与采集分开启动** |
 | 边采边传 | `upload.yaml` + 后台 `rsync` | ✅ 随 core/recorder 一起 build | 本地落盘完成后异步上传整段 episode |
 | legacy 路径 | `multi_subscriber/multi_topic_subscriber` | ✅ 需要 | 旧版 PNG + CSV 落盘，作为 fallback 保留 |
 
@@ -28,7 +27,13 @@ MCAP recorder 由 `/xr/controller_state` 控制：
 | `15` | 记录 `intervention_end`，录制不中断 |
 | `16` | 记录 `intervention_start`，录制不中断 |
 
-此外，采集中若 `/scan/success` 从 **1 变为 0**（30Hz 信号，见下文扫码模块），也会触发与 `14` 相同的停录流程。
+此外，在运行 `mcap_recorder` 的终端里输入 `d` 或 `discard` 并回车，可丢弃**刚结束的那一段**（默认仍然是保存，只有主动输入才会删除）：
+
+- 删除该段本地目录；若已启用自动上传，同时尝试删除远端副本（已上传/上传中都会尝试清理，失败不影响后续采集）。
+- 不影响正在进行或之后的采集；一旦按 `13` 开始下一段，上一段就不能再撤销。
+- 若该段还在后台保存中，会提示稍后再试；若没有可丢弃的段，会提示当前无操作对象。
+
+LeRobot 自动转换默认开启。程序启动时不会处理历史数据；刚结束的段先保留丢弃窗口，按 `13` 开始下一段后也不会立即转换，等下一段真正结束后，上一段才会加入转换队列。被 `d/discard` 删除的段不会转换。
 
 默认录制话题见：
 
@@ -93,8 +98,6 @@ ros2 bag record \
   /left_gripper_controller/target_command \
   /right_gripper_controller/target_command \
   /xr/controller_state \
-  /scan/success \
-  /scan/code \
   -o ~/ros2_bags/recording_$(date +%Y%m%d_%H%M%S)
 ```
 
@@ -118,67 +121,6 @@ ros2 launch data_collection_recorder mcap_recorder.launch.py \
 
 - Launch 里 **`storage_preset_profile:=none` 会几乎不压缩**，勿用。
 
-## 扫码模块 `scan_demo`（真实 Matrix220）
-
-`src/scan_demo/` **不是 ROS2 包**（无 `package.xml`），不参与 `colcon build`，需用脚本**单独启动**。
-
-### 与采集的关系
-
-扫码与 `mcap_recorder` 通过话题协作，**没有写进同一个 launch**，采集员需开两个终端（或两个进程）：
-
-```text
-scan_demo                          mcap_recorder
-  matrix220/driver.py  -> /scan/code        (录进 bag)
-  scan_success_publisher -> /scan/success   (订阅：采集中 1->0 则停录)
-  订阅 /ros2recordstop  <- 停录时由 recorder 发布
-```
-
-`/scan/success` 状态机（固定 30Hz）：
-
-```text
-0 --[有效扫码 /scan/code]--> 1 --[停录 /ros2recordstop]--> 0
-```
-
-- 只开 `mcap_recorder`、不开扫码：仍可用 **13/14** 采集，`/scan/success` 可能一直为 0。
-- 要用「扫码停录」：必须先起扫码，再起采集。
-
-### 启动顺序（推荐）
-
-**终端 1 — 扫码**
-
-```bash
-cd ~/code/ros2_data_collection-ZJC/src/scan_demo
-bash stop_all.sh                    # 清旧节点，避免 /scan/success 双发布
-bash start_matrix220_ros2.sh        # 默认连 Matrix220 192.168.10.104:51236
-```
-
-无真实扫码器时用模拟器：
-
-```bash
-cd ~/code/ros2_data_collection-ZJC/src/scan_demo
-source /opt/ros/jazzy/setup.bash
-python3 ros/mock_scanner_ros2.py    # 空格/s=置1，r=置0
-```
-
-**终端 2 — 采集**
-
-```bash
-cd ~/code/ros2_data_collection-ZJC
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 launch data_collection_recorder mcap_recorder.launch.py
-```
-
-### 采集员典型流程
-
-1. 两个终端分别启动扫码 + `mcap_recorder`。
-2. 控制器 **13** 开始本段采集。
-3. 扫有效条码 → `/scan/success` 变为 1。
-4. 结束本段：**14**，或让 `/scan/success` 回到 0（真实场景由 `/ros2recordstop` 复位；mock 可按 `r`）。
-5. 终端提示「本段已结束」后可**立刻按 13** 开下一段；落盘与上传在后台进行。
-
-更多细节见 `src/scan_demo/README.md`。
-
 ## 边采边传（episode 上传）
 
 本地 episode 落盘完成后，后台线程用 `rsync` 将**整段目录**（`metadata.json` + `recording/`）同步到远程服务器。
@@ -194,6 +136,33 @@ ros2 launch data_collection_recorder mcap_recorder.launch.py
 - **与采集隔离**：上传失败不影响继续采集；仅终端提示 ⚠️，本地数据仍在。
 - **补传**：`ros2 run data_collection_core episode_upload_pending`
 - **单段测试**：`python3 scripts/test_upload_one_episode.py <episode_dir>`
+
+## MCAP 自动转 LeRobot
+
+转换配置：
+
+```text
+src/data_collection_recorder/config/recording/lerobot_conversion.yaml
+```
+
+默认开启。通常只需要改 `output_dir`：
+
+```yaml
+lerobot_conversion:
+  enabled: true
+  script_path: ~/dataset_convert2lerobot/convert.sh
+  output_dir: ~/data/lerobot_data/parcel_sorting
+```
+
+recorder 会后台调用：
+
+```bash
+~/dataset_convert2lerobot/convert.sh \
+  --input-root <episode_dir> \
+  --output-dir <output_dir>
+```
+
+转换日志写到 episode 目录下的 `lerobot_conversion.log`，状态写入 `metadata.json` 的 `lerobot_conversion` 字段。目标目录不存在时转换器会创建；目标目录已经是兼容的 LeRobot 数据集时会续写追加 episode。
 
 ## legacy 录制路径
 

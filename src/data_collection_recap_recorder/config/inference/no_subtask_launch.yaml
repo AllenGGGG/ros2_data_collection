@@ -1,3 +1,3 @@
 python_executable: /home/liweile/miniforge3/envs/lerobot_dev_050/bin/python
-inference_script: /home/liweile/IsaacSim-ros_workspaces/jazzy_ws/src/isaac_tutorials/scripts/pistar06/post_train/trajs683_delta/pistar06_inference_post_train_trajs683_delta_speedup_2x_chunksize_35_async_scan_runtime.py
+inference_script: ""
 python_path: /home/liweile/workspace/lerobot_dev/src

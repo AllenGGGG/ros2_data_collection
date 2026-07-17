@@ -8,6 +8,7 @@ def generate_launch_description():
     output_dir = LaunchConfiguration('output_dir')
     profile_path = LaunchConfiguration('profile_path')
     storage_preset_profile = LaunchConfiguration('storage_preset_profile')
+    lerobot_conversion_enabled = LaunchConfiguration('lerobot_conversion_enabled')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -25,6 +26,11 @@ def generate_launch_description():
             default_value='zstd_small',
             description='MCAP preset passed to native ros2 bag record.',
         ),
+        DeclareLaunchArgument(
+            'lerobot_conversion_enabled',
+            default_value='false',
+            description='Enable LeRobot conversion for this launch.',
+        ),
         Node(
             package='data_collection_recorder',
             executable='mcap_recorder',
@@ -34,6 +40,7 @@ def generate_launch_description():
                 'output_dir': output_dir,
                 'profile_path': profile_path,
                 'storage_preset_profile': storage_preset_profile,
+                'lerobot_conversion_enabled': lerobot_conversion_enabled,
             }],
         ),
     ])

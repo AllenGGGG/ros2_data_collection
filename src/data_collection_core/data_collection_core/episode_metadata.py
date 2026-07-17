@@ -13,11 +13,19 @@ def read_episode_metadata(episode_dir: Path) -> Dict[str, Any]:
 
 
 def update_episode_upload(episode_dir: Path, **fields: Any) -> None:
+    update_episode_section(episode_dir, 'upload', **fields)
+
+
+def update_episode_conversion(episode_dir: Path, **fields: Any) -> None:
+    update_episode_section(episode_dir, 'lerobot_conversion', **fields)
+
+
+def update_episode_section(episode_dir: Path, section_name: str, **fields: Any) -> None:
     metadata_path = episode_dir / 'metadata.json'
     data = read_episode_metadata(episode_dir) if metadata_path.is_file() else {}
-    upload_section = dict(data.get('upload') or {})
-    upload_section.update(fields)
-    data['upload'] = upload_section
+    section = dict(data.get(section_name) or {})
+    section.update(fields)
+    data[section_name] = section
 
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = metadata_path.with_suffix('.json.tmp')
