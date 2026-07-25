@@ -9,7 +9,7 @@ no-subtask **recap 推理 rollout** 专用数采包：与 `data_collection_recor
 | 用途 | 专家遥操 / 通用 MCAP 数采 | recap 推理 rollout + 人工接管 |
 | `/intervention` | 不录制 | 录制并持续发布 |
 | 推理联动 | 无 | launch 可一并启动推理脚本 |
-| 13/14 | 开/停录制 | 开/停录制 |
+| 4/14 | 开/停录制 | 开/停录制 |
 | 30/31 | 不处理 | 录制中切换 `/intervention`，不中断 MCAP |
 
 普通数采请继续用：
@@ -22,12 +22,12 @@ ros2 launch data_collection_recorder mcap_recorder.launch.py
 
 ```text
 VR 手柄
-  └─ xr_target_node  ──发布──► /xr/controller_state (13/14/30/31)
+  └─ xr_target_node  ──发布──► /xr/controller_state (4/14/30/31)
                                     │
             ┌───────────────────────┼───────────────────────┐
             ▼                       ▼                       ▼
    recap_mcap_recorder      no-subtask 推理脚本        arms_target_manager
-   (13/14 开停录)           (30/31 暂停/恢复推理)       (VR 遥操 pose/夹爪)
+   (4/14 开停录)            (30/31 暂停/恢复推理)       (VR 遥操 pose/夹爪)
    (30/31 写 intervention)
 ```
 
@@ -35,15 +35,15 @@ VR 手柄
 
 | VR 操作 | code | recap 数采 | 推理脚本 |
 | --- | --- | --- | --- |
-| 左侧键 + 左前键 | `13` | 开始录制 episode | 无影响 |
+| AA + 右摇杆（进入 OCS2 遥操） | `4` | 开始录制 episode | 无影响 |
 | 右侧键 + 右前键 | `14` | 停止录制并落盘 | 无影响 |
 | 左侧键 + X | `30` | 继续录，`/intervention=0` | 恢复推理，开始发动作/夹爪 |
 | 右侧键 + A | `31` | 继续录，`/intervention=1` | 暂停推理，停止发动作/夹爪 |
-| 右摇杆（接管） | — | 继续录 | 人工遥操（由 `arms_target_manager` 控制） |
+| 右摇杆（接管） | `4` | 开始录制（与进入 OCS2 遥操共用同一按键） | 人工遥操（由 `arms_target_manager` 控制） |
 
 要点：
 
-- **开始数采（13）不会自动开始推理**。推理进程在 launch 时加载模型一次，但默认 `start_inference_enabled: false`，需 VR 发 `30` 才开始发动作。
+- **开始数采（4）不会自动开始推理**。推理进程在 launch 时加载模型一次，但默认 `start_inference_enabled: false`，需 VR 发 `30` 才开始发动作。
 - **暂停推理（31）不会卸载模型**，只是推理侧 `_inference_enabled=false`，清空 action buffer，不再发布 target/夹爪。
 - **推理时 VR 是否发夹爪** 由机器人侧 `arms_target_manager` 仲裁；本包只保证推理侧在暂停时不发。
 

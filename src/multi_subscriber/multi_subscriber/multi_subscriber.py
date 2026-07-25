@@ -20,7 +20,7 @@ import shutil
 import threading
 import uuid
 
-START_RECORDING_CODE = 13
+START_RECORDING_CODE = 4
 STOP_RECORDING_CODE = 14
 INFERENCE_RESUMED_CODE = 30
 INFERENCE_PAUSED_CODE = 31
@@ -178,7 +178,7 @@ class MultiTopicSubscriber(Node):
             callback_group=self.state_callback_group
         )
 
-        # 订阅控制器状态：13 开始录制，14 停止录制，30/31 标注推理介入状态
+        # 订阅控制器状态：4（AA+右摇杆，进入OCS2遥操）开始录制，14 停止录制，30/31 标注推理介入状态
         self.controller_state_subscription = self.create_subscription(
             Int32,
             '/xr/controller_state',

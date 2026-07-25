@@ -127,7 +127,7 @@ class McapRecorderNode(Node):
         )
         ready_lines = [
             f'📂 保存目录：{self.output_dir.expanduser()}',
-            '🎮 开始采集 → 控制器 13',
+            '🎮 开始采集 → AA + 右摇杆（进入 OCS2 遥操）',
             '🛑 结束采集 → 控制器 14',
             '🗑️  丢弃上一段 → 本终端输入 d 或 discard 回车',
         ]
@@ -542,7 +542,7 @@ class McapRecorderNode(Node):
                 f'🆔  {episode.episode_id}',
                 f'📁  {episode_dir}',
                 '💾  上一段正在后台保存…',
-                '👉  现在可以直接按 13 开始下一段',
+                '👉  现在可以直接按 AA+右摇杆 开始下一段',
                 '⚠️  不要关闭此终端窗口',
             ],
             headline_bg=_BG_YELLOW,
