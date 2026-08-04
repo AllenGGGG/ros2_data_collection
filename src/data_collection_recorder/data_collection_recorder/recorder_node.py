@@ -23,6 +23,7 @@ from data_collection_core.lerobot_converter import LeRobotEpisodeConverter
 from data_collection_core.upload_config import UploadConfig, load_upload_config
 from data_collection_core.constants import (
     DEFAULT_CONTROL_TOPIC,
+    DISCARD_LAST_EPISODE_CODE,
     RECORD_STOP_TOPIC,
     START_RECORDING_CODE,
     STOP_RECORDING_CODE,
@@ -113,6 +114,9 @@ class McapRecorderNode(Node):
         self._convert_after_save_episode_ids: set[str] = set()
         self._episode_waiting_for_next_collection: Optional[EpisodeInfo] = None
         self._last_stopped_episode: Optional[EpisodeInfo] = None
+        # stdin and ROS callbacks run on different threads. Serialize discard
+        # requests so CLI and controller input cannot delete the same episode twice.
+        self._discard_lock = threading.Lock()
 
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
         self._record_stop_publisher = self.create_publisher(Empty, RECORD_STOP_TOPIC, 10)
@@ -129,7 +133,7 @@ class McapRecorderNode(Node):
             f'📂 保存目录：{self.output_dir.expanduser()}',
             '🎮 开始采集 → AA + 右摇杆（进入 OCS2 遥操）',
             '🛑 结束采集 → 控制器 14',
-            '🗑️  丢弃上一段 → 本终端输入 d 或 discard 回车',
+            '🗑️  丢弃上一段 → 按控制器 13，或终端输入 d/discard 回车',
         ]
         if self._uploader is not None:
             ready_lines.append(
@@ -255,6 +259,8 @@ class McapRecorderNode(Node):
             self._start_recording(timestamp_ns)
         elif code == STOP_RECORDING_CODE:
             self._stop_recording(timestamp_ns, source='controller_14')
+        elif code == DISCARD_LAST_EPISODE_CODE:
+            self._handle_discard_command()
 
     def _pending_save_count(self) -> int:
         with self._save_threads_lock:
@@ -612,25 +618,28 @@ class McapRecorderNode(Node):
                     self._handle_discard_command()
 
     def _handle_discard_command(self) -> None:
-        episode = self._last_stopped_episode
-        if episode is None:
-            self._collector_warn('⚠️  没有可丢弃的段（还没结束采集，或已丢弃/已开始下一段）')
-            return
+        with self._discard_lock:
+            episode = self._last_stopped_episode
+            if episode is None:
+                self._collector_warn('⚠️  没有可丢弃的段（还没结束采集，或已丢弃/已开始下一段）')
+                return
 
-        thread_name = f'mcap-save-{episode.episode_id}'
-        with self._save_threads_lock:
-            still_saving = any(
-                thread.name == thread_name and thread.is_alive()
-                for thread in self._save_threads
-            )
-        if still_saving:
-            self._collector_warn(f'⏳  {episode.episode_id} 仍在后台保存，请稍后再输入 d/discard')
-            return
+            thread_name = f'mcap-save-{episode.episode_id}'
+            with self._save_threads_lock:
+                still_saving = any(
+                    thread.name == thread_name and thread.is_alive()
+                    for thread in self._save_threads
+                )
+            if still_saving:
+                self._collector_warn(
+                    f'⏳  {episode.episode_id} 仍在后台保存，请稍后再按 13 或输入 d/discard'
+                )
+                return
 
-        self._last_stopped_episode = None
-        self._episode_waiting_for_next_collection = None
-        self._convert_after_save_episode_ids.discard(episode.episode_id)
-        self._discard_episode(episode)
+            self._last_stopped_episode = None
+            self._episode_waiting_for_next_collection = None
+            self._convert_after_save_episode_ids.discard(episode.episode_id)
+            self._discard_episode(episode)
 
     def _discard_episode(self, episode: EpisodeInfo) -> None:
         episode_dir = episode.episode_dir.resolve()

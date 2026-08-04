@@ -1,4 +1,5 @@
 from data_collection_recorder.recorder_node import McapRecorderNode
+from data_collection_core.constants import DISCARD_LAST_EPISODE_CODE
 from data_collection_core.lerobot_conversion_config import LeRobotConversionConfig
 from data_collection_core.lerobot_converter import LeRobotEpisodeConverter
 from data_collection_core.episode_uploader import EpisodeUploader
@@ -72,6 +73,7 @@ def test_discard_command_without_stopped_episode_warns():
     node._last_stopped_episode = None
     node._save_threads = []
     node._save_threads_lock = __import__("threading").Lock()
+    node._discard_lock = __import__("threading").Lock()
     node._convert_after_save_episode_ids = set()
     warnings = []
     node._collector_warn = lambda msg: warnings.append(msg)
@@ -97,6 +99,7 @@ def test_discard_command_removes_last_stopped_episode(tmp_path):
     node._last_stopped_episode = episode
     node._save_threads = []
     node._save_threads_lock = __import__("threading").Lock()
+    node._discard_lock = __import__("threading").Lock()
     node._convert_after_save_episode_ids = set()
     node._uploader = None
     node.get_logger = lambda: _Logger()
@@ -106,6 +109,87 @@ def test_discard_command_removes_last_stopped_episode(tmp_path):
 
     assert not episode_dir.exists()
     assert node._last_stopped_episode is None
+
+
+def test_controller_13_uses_same_discard_handler():
+    class _ClockNow:
+        nanoseconds = 123
+
+    class _Clock:
+        def now(self):
+            return _ClockNow()
+
+    class _Message:
+        data = DISCARD_LAST_EPISODE_CODE
+
+    node = McapRecorderNode.__new__(McapRecorderNode)
+    calls = []
+    node.get_clock = lambda: _Clock()
+    node._handle_discard_command = lambda: calls.append("discard")
+
+    node._handle_control_message(_Message())
+
+    assert calls == ["discard"]
+
+
+def test_recap_controller_13_uses_same_discard_handler():
+    from data_collection_recap_recorder.recap_recorder_node import RecapMcapRecorderNode
+
+    class _ClockNow:
+        nanoseconds = 123
+
+    class _Clock:
+        def now(self):
+            return _ClockNow()
+
+    class _Message:
+        data = DISCARD_LAST_EPISODE_CODE
+
+    node = RecapMcapRecorderNode.__new__(RecapMcapRecorderNode)
+    calls = []
+    node.get_clock = lambda: _Clock()
+    node._handle_discard_command = lambda: calls.append("discard")
+
+    node._handle_control_message(_Message())
+
+    assert calls == ["discard"]
+
+
+def test_discard_requests_are_serialized(tmp_path):
+    from data_collection_core.session import EpisodeInfo
+
+    episode_dir = tmp_path / "20260716_120000_000001"
+    recording_dir = episode_dir / "recording"
+    recording_dir.mkdir(parents=True)
+    episode = EpisodeInfo(
+        episode_id=episode_dir.name,
+        episode_dir=episode_dir,
+        recording_dir=recording_dir,
+    )
+
+    node = McapRecorderNode.__new__(McapRecorderNode)
+    node._last_stopped_episode = episode
+    node._episode_waiting_for_next_collection = None
+    node._save_threads = []
+    node._save_threads_lock = __import__("threading").Lock()
+    node._discard_lock = __import__("threading").Lock()
+    node._convert_after_save_episode_ids = set()
+    warnings = []
+    discarded = []
+    node._collector_warn = lambda msg: warnings.append(msg)
+    node._discard_episode = lambda item: discarded.append(item.episode_id)
+
+    threads = [
+        __import__("threading").Thread(target=node._handle_discard_command)
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert discarded == [episode.episode_id]
+    assert len(warnings) == 1
 
 
 def test_uploader_discard_marks_skip_and_removes_remote(tmp_path, monkeypatch):
@@ -167,4 +251,3 @@ def test_lerobot_converter_runs_convert_script(tmp_path):
         "--output-dir",
         str(output_dir.resolve()),
     ]
-

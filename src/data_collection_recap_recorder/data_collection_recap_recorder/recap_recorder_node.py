@@ -9,6 +9,7 @@ from std_msgs.msg import Int32
 
 from data_collection_core.constants import (
     DEFAULT_CONTROL_TOPIC,
+    DISCARD_LAST_EPISODE_CODE,
     INFERENCE_PAUSED_CODE,
     INFERENCE_RESUMED_CODE,
     START_RECORDING_CODE,
@@ -66,6 +67,8 @@ class RecapMcapRecorderNode(McapRecorderNode):
             self._start_recording(timestamp_ns)
         elif code == STOP_RECORDING_CODE:
             self._stop_recording(timestamp_ns, source='controller_14')
+        elif code == DISCARD_LAST_EPISODE_CODE:
+            self._handle_discard_command()
         elif code == INFERENCE_PAUSED_CODE:
             if self.session.start_intervention(code=code, timestamp_ns=timestamp_ns):
                 self._set_intervention_value(1)
