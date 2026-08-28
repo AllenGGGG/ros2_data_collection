@@ -85,6 +85,7 @@ def _make_size_check_node(
 ):
     node = McapRecorderNode.__new__(McapRecorderNode)
     node._last_stopped_episode = episode
+    node._episode_size_limit_enabled = True
     node._minimum_episode_size_bytes = minimum_size_bytes
     node._minimum_episode_size_mb = minimum_size_bytes / 1_000_000
     node._maximum_episode_size_bytes = maximum_size_bytes
@@ -165,6 +166,22 @@ def test_previous_episode_at_maximum_size_allows_start(tmp_path):
     node._publish_start_blocked_signals = lambda: None
 
     assert node._previous_episode_allows_start() is True
+
+
+def test_disabled_size_limit_allows_out_of_range_episode(tmp_path):
+    episode = _make_stopped_episode(tmp_path)
+    (episode.recording_dir / "recording_0.mcap").write_bytes(b"small")
+    node = _make_size_check_node(
+        episode,
+        minimum_size_bytes=10,
+        maximum_size_bytes=20,
+    )
+    node._episode_size_limit_enabled = False
+    stop_signals = []
+    node._publish_start_blocked_signals = lambda: stop_signals.append("stop")
+
+    assert node._previous_episode_allows_start() is True
+    assert stop_signals == []
 
 
 def test_previous_episode_still_saving_blocks_start(tmp_path):

@@ -35,7 +35,7 @@ from data_collection_core.topic_registry import TopicProfile
 
 DEFAULT_OUTPUT_DIR = '~/ros2_ws/raw_datasets_mcap'
 BYTES_PER_MB = 1_000_000
-DEFAULT_MINIMUM_EPISODE_SIZE_MB = 100.0
+DEFAULT_MINIMUM_EPISODE_SIZE_MB = 108.0
 DEFAULT_MAXIMUM_EPISODE_SIZE_MB = 145.0
 
 # 采集员终端样式（仅 print，不重复刷 ROS 日志）
@@ -98,6 +98,7 @@ class McapRecorderNode(Node):
         self.declare_parameter('storage_id', 'mcap')
         self.declare_parameter('storage_preset_profile', 'zstd_small')
         self.declare_parameter('lerobot_conversion_enabled', False)
+        self.declare_parameter('episode_size_limit_enabled', True)
         self.declare_parameter(
             'minimum_episode_size_mb',
             DEFAULT_MINIMUM_EPISODE_SIZE_MB,
@@ -115,6 +116,9 @@ class McapRecorderNode(Node):
         self.session = EpisodeSession(self.output_dir)
         self._storage_id = str(self.get_parameter('storage_id').value)
         self._storage_preset_profile = str(self.get_parameter('storage_preset_profile').value)
+        self._episode_size_limit_enabled = bool(
+            self.get_parameter('episode_size_limit_enabled').value
+        )
         minimum_episode_size_mb = float(
             self.get_parameter('minimum_episode_size_mb').value
         )
@@ -170,7 +174,9 @@ class McapRecorderNode(Node):
             '🛑 结束采集 → 控制器 14',
             '🗑️  丢弃上一段 → 按控制器 13，或终端输入 d/discard 回车',
         ]
-        if self._minimum_episode_size_bytes > 0 and self._maximum_episode_size_bytes > 0:
+        if not self._episode_size_limit_enabled:
+            ready_lines.append('🔓  数据大小限制已关闭')
+        elif self._minimum_episode_size_bytes > 0 and self._maximum_episode_size_bytes > 0:
             ready_lines.append(
                 f'🛡️  上一段须在 {self._minimum_episode_size_mb:g}–'
                 f'{self._maximum_episode_size_mb:g} MB，超出范围须先丢弃'
@@ -343,6 +349,8 @@ class McapRecorderNode(Node):
         )
 
     def _episode_size_violation(self, size_bytes: int) -> Optional[str]:
+        if not self._episode_size_limit_enabled:
+            return None
         size_mb = size_bytes / BYTES_PER_MB
         if (
             self._minimum_episode_size_bytes > 0
@@ -364,7 +372,7 @@ class McapRecorderNode(Node):
 
     def _previous_episode_allows_start(self) -> bool:
         episode = self._last_stopped_episode
-        if episode is None or (
+        if episode is None or not self._episode_size_limit_enabled or (
             self._minimum_episode_size_bytes <= 0
             and self._maximum_episode_size_bytes <= 0
         ):
@@ -698,7 +706,9 @@ class McapRecorderNode(Node):
     def _show_stop_handoff(self, episode: EpisodeInfo) -> None:
         episode_dir = episode.episode_dir.resolve()
         next_step_lines = ['👉  保存完成后可以开始下一段']
-        if self._minimum_episode_size_bytes > 0 and self._maximum_episode_size_bytes > 0:
+        if not self._episode_size_limit_enabled:
+            next_step_lines = ['🔓  大小限制已关闭，保存完成后可以开始下一段']
+        elif self._minimum_episode_size_bytes > 0 and self._maximum_episode_size_bytes > 0:
             next_step_lines = [
                 f'🛡️  MCAP 须在 {self._minimum_episode_size_mb:g}–'
                 f'{self._maximum_episode_size_mb:g} MB 才能开始下一段',

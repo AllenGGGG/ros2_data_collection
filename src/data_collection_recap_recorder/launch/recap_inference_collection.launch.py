@@ -86,6 +86,7 @@ def generate_launch_description():
     storage_preset_profile = LaunchConfiguration('storage_preset_profile')
     intervention_topic = LaunchConfiguration('intervention_topic')
     intervention_publish_hz = LaunchConfiguration('intervention_publish_hz')
+    episode_size_limit_enabled = LaunchConfiguration('episode_size_limit_enabled')
     minimum_episode_size_mb = LaunchConfiguration('minimum_episode_size_mb')
     maximum_episode_size_mb = LaunchConfiguration('maximum_episode_size_mb')
 
@@ -131,8 +132,13 @@ def generate_launch_description():
             description='Publish frequency for the /intervention state.',
         ),
         DeclareLaunchArgument(
+            'episode_size_limit_enabled',
+            default_value='true',
+            description='Enable previous MCAP size validation before the next episode.',
+        ),
+        DeclareLaunchArgument(
             'minimum_episode_size_mb',
-            default_value='100.0',
+            default_value='108.0',
             description='Minimum previous MCAP size required before starting the next episode.',
         ),
         DeclareLaunchArgument(
@@ -176,6 +182,7 @@ def generate_launch_description():
                 'storage_preset_profile': storage_preset_profile,
                 'intervention_topic': intervention_topic,
                 'intervention_publish_hz': intervention_publish_hz,
+                'episode_size_limit_enabled': episode_size_limit_enabled,
                 'minimum_episode_size_mb': minimum_episode_size_mb,
                 'maximum_episode_size_mb': maximum_episode_size_mb,
             }],

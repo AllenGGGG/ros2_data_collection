@@ -9,6 +9,7 @@ def generate_launch_description():
     profile_path = LaunchConfiguration('profile_path')
     storage_preset_profile = LaunchConfiguration('storage_preset_profile')
     lerobot_conversion_enabled = LaunchConfiguration('lerobot_conversion_enabled')
+    episode_size_limit_enabled = LaunchConfiguration('episode_size_limit_enabled')
     minimum_episode_size_mb = LaunchConfiguration('minimum_episode_size_mb')
     maximum_episode_size_mb = LaunchConfiguration('maximum_episode_size_mb')
 
@@ -34,8 +35,13 @@ def generate_launch_description():
             description='Enable LeRobot conversion for this launch.',
         ),
         DeclareLaunchArgument(
+            'episode_size_limit_enabled',
+            default_value='true',
+            description='Enable previous MCAP size validation before the next episode.',
+        ),
+        DeclareLaunchArgument(
             'minimum_episode_size_mb',
-            default_value='100.0',
+            default_value='108.0',
             description='Minimum previous MCAP size required before starting the next episode.',
         ),
         DeclareLaunchArgument(
@@ -53,6 +59,7 @@ def generate_launch_description():
                 'profile_path': profile_path,
                 'storage_preset_profile': storage_preset_profile,
                 'lerobot_conversion_enabled': lerobot_conversion_enabled,
+                'episode_size_limit_enabled': episode_size_limit_enabled,
                 'minimum_episode_size_mb': minimum_episode_size_mb,
                 'maximum_episode_size_mb': maximum_episode_size_mb,
             }],

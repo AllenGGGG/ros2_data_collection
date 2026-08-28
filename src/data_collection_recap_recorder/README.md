@@ -45,7 +45,8 @@ VR 手柄
 要点：
 
 - **开始数采（4）不会自动开始推理**。推理进程在 launch 时加载模型一次，但默认 `start_inference_enabled: false`，需 VR 发 `30` 才开始发动作。
-- 上一段保存后的 MCAP 不在 **100–145 MB** 范围内（小于 100 MB 或大于 145 MB）且尚未删除时，`4` 会被 recorder 拦截，并发布 `/ros2recordstop` 和 `/fsm_command=2`，命令机器人回到 `HOLD`、取消 OCS2 遥操。请先按 `13` 删除该段，再开始下一段；保存尚未结束时也会暂时拦截。上下限可用 `minimum_episode_size_mb` 和 `maximum_episode_size_mb` 调整。
+- 上一段保存后的 MCAP 不在 **108–145 MB** 范围内（小于 108 MB 或大于 145 MB）且尚未删除时，`4` 会被 recorder 拦截，并发布 `/ros2recordstop` 和 `/fsm_command=2`，命令机器人回到 `HOLD`、取消 OCS2 遥操。请先按 `13` 删除该段，再开始下一段；保存尚未结束时也会暂时拦截。上下限可用 `minimum_episode_size_mb` 和 `maximum_episode_size_mb` 调整。
+- 使用仓库根目录的 `./quick.start 1` 或 `./quick.start 4` 启动时，可在终端选择本次开启或关闭大小限制；也可设置 `QUICK_START_EPISODE_SIZE_LIMIT=true/false` 跳过询问。
 - **暂停推理（31）不会卸载模型**，只是推理侧 `_inference_enabled=false`，清空 action buffer，不再发布 target/夹爪。
 - **推理时 VR 是否发夹爪** 由机器人侧 `arms_target_manager` 仲裁；本包只保证推理侧在暂停时不发。
 

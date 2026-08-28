@@ -22,9 +22,12 @@ usage() {
 如需跳过编译: QUICK_START_SKIP_BUILD=1 ./quick.start <序号>
 LeRobot 自动转换可在启动普通 MCAP 数采时交互选择，也可用
 QUICK_START_LEROBOT_CONVERSION=true/false/config 预设。
+MCAP 数据大小限制可在启动时交互选择，也可用
+QUICK_START_EPISODE_SIZE_LIMIT=true/false 预设（默认开启 108–145 MB）。
 示例:
   ./quick.start 2 output_dir:=/tmp/raw_datasets_mcap
   ./quick.start 2 lerobot_conversion_enabled:=false
+  QUICK_START_EPISODE_SIZE_LIMIT=false ./quick.start 2
   ./quick.start 3 --ros-args -p use_compressed_images:=true
 EOF
 }
@@ -94,7 +97,66 @@ run_ros_package() {
 
 run_recap_recorder() {
   run_ros_package data_collection_core data_collection_recorder data_collection_recap_recorder
+  if ! has_episode_size_limit_arg "$@"; then
+    local size_limit_mode
+    size_limit_mode="$(choose_episode_size_limit_mode)"
+    if has_ros_args_marker "$@"; then
+      set -- "$@" "-p" "episode_size_limit_enabled:=${size_limit_mode}"
+    else
+      set -- "--ros-args" "-p" "episode_size_limit_enabled:=${size_limit_mode}" "$@"
+    fi
+  fi
   exec ros2 run data_collection_recap_recorder recap_mcap_recorder "$@"
+}
+
+has_episode_size_limit_arg() {
+  local arg
+  for arg in "$@"; do
+    case "${arg}" in
+      episode_size_limit_enabled:=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+has_ros_args_marker() {
+  local arg
+  for arg in "$@"; do
+    if [[ "${arg}" == "--ros-args" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+choose_episode_size_limit_mode() {
+  if [[ -n "${QUICK_START_EPISODE_SIZE_LIMIT:-}" ]]; then
+    case "${QUICK_START_EPISODE_SIZE_LIMIT}" in
+      0|off|OFF|false|FALSE|no|NO) printf 'false' ;;
+      *) printf 'true' ;;
+    esac
+    return
+  fi
+
+  if [[ ! -t 0 ]]; then
+    printf 'true'
+    return
+  fi
+
+  cat >&2 <<EOF
+
+MCAP 数据大小限制（本次启动）:
+  1  开启：仅允许 108–145 MB（默认）
+  2  关闭：不检查上一段数据大小
+
+请选择 [1/2，默认 1]:
+EOF
+  local choice
+  read -r choice
+  case "${choice}" in
+    2|off|OFF|false|FALSE|no|NO) printf 'false' ;;
+    *) printf 'true' ;;
+  esac
 }
 
 has_lerobot_conversion_arg() {
@@ -138,6 +200,11 @@ EOF
 
 run_mcap_recorder() {
   run_ros_package data_collection_core data_collection_recorder
+  if ! has_episode_size_limit_arg "$@"; then
+    local size_limit_mode
+    size_limit_mode="$(choose_episode_size_limit_mode)"
+    set -- "episode_size_limit_enabled:=${size_limit_mode}" "$@"
+  fi
   if ! has_lerobot_conversion_arg "$@"; then
     local conversion_mode
     conversion_mode="$(choose_lerobot_conversion_mode)"
@@ -155,6 +222,11 @@ run_multi_subscriber() {
 
 run_recap_full_launch() {
   run_ros_package data_collection_core data_collection_recorder data_collection_recap_recorder
+  if ! has_episode_size_limit_arg "$@"; then
+    local size_limit_mode
+    size_limit_mode="$(choose_episode_size_limit_mode)"
+    set -- "episode_size_limit_enabled:=${size_limit_mode}" "$@"
+  fi
   exec ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py "$@"
 }
 
