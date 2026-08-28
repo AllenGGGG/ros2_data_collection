@@ -24,6 +24,8 @@ from data_collection_core.upload_config import UploadConfig, load_upload_config
 from data_collection_core.constants import (
     DEFAULT_CONTROL_TOPIC,
     DISCARD_LAST_EPISODE_CODE,
+    FSM_COMMAND_TOPIC,
+    FSM_HOLD_COMMAND,
     RECORD_STOP_TOPIC,
     START_RECORDING_CODE,
     STOP_RECORDING_CODE,
@@ -32,6 +34,9 @@ from data_collection_core.session import EpisodeInfo, EpisodeSession
 from data_collection_core.topic_registry import TopicProfile
 
 DEFAULT_OUTPUT_DIR = '~/ros2_ws/raw_datasets_mcap'
+BYTES_PER_MB = 1_000_000
+DEFAULT_MINIMUM_EPISODE_SIZE_MB = 100.0
+DEFAULT_MAXIMUM_EPISODE_SIZE_MB = 145.0
 
 # 采集员终端样式（仅 print，不重复刷 ROS 日志）
 _R = '\033[0m'
@@ -93,6 +98,14 @@ class McapRecorderNode(Node):
         self.declare_parameter('storage_id', 'mcap')
         self.declare_parameter('storage_preset_profile', 'zstd_small')
         self.declare_parameter('lerobot_conversion_enabled', False)
+        self.declare_parameter(
+            'minimum_episode_size_mb',
+            DEFAULT_MINIMUM_EPISODE_SIZE_MB,
+        )
+        self.declare_parameter(
+            'maximum_episode_size_mb',
+            DEFAULT_MAXIMUM_EPISODE_SIZE_MB,
+        )
 
         self.control_topic = str(self.get_parameter('control_topic').value)
         self.profile_path = self._resolve_profile_path()
@@ -102,6 +115,27 @@ class McapRecorderNode(Node):
         self.session = EpisodeSession(self.output_dir)
         self._storage_id = str(self.get_parameter('storage_id').value)
         self._storage_preset_profile = str(self.get_parameter('storage_preset_profile').value)
+        minimum_episode_size_mb = float(
+            self.get_parameter('minimum_episode_size_mb').value
+        )
+        maximum_episode_size_mb = float(
+            self.get_parameter('maximum_episode_size_mb').value
+        )
+        if minimum_episode_size_mb < 0 or maximum_episode_size_mb < 0:
+            raise ValueError('episode size limits must be greater than or equal to 0')
+        if (
+            minimum_episode_size_mb > 0
+            and maximum_episode_size_mb > 0
+            and maximum_episode_size_mb < minimum_episode_size_mb
+        ):
+            raise ValueError(
+                'maximum_episode_size_mb must be greater than or equal to '
+                'minimum_episode_size_mb'
+            )
+        self._minimum_episode_size_mb = minimum_episode_size_mb
+        self._minimum_episode_size_bytes = int(minimum_episode_size_mb * BYTES_PER_MB)
+        self._maximum_episode_size_mb = maximum_episode_size_mb
+        self._maximum_episode_size_bytes = int(maximum_episode_size_mb * BYTES_PER_MB)
         self._topic_names = [topic.name for topic in self.profile.topics]
 
         self._active_backend: Optional[BagRos2CliBackend] = None
@@ -120,6 +154,7 @@ class McapRecorderNode(Node):
 
         self.control_callback_group = MutuallyExclusiveCallbackGroup()
         self._record_stop_publisher = self.create_publisher(Empty, RECORD_STOP_TOPIC, 10)
+        self._fsm_command_publisher = self.create_publisher(Int32, FSM_COMMAND_TOPIC, 10)
         self._create_control_subscription()
         # SSH 自动上传暂时停用，先只做本地 MCAP 落盘。
         # self._init_uploader()
@@ -135,6 +170,19 @@ class McapRecorderNode(Node):
             '🛑 结束采集 → 控制器 14',
             '🗑️  丢弃上一段 → 按控制器 13，或终端输入 d/discard 回车',
         ]
+        if self._minimum_episode_size_bytes > 0 and self._maximum_episode_size_bytes > 0:
+            ready_lines.append(
+                f'🛡️  上一段须在 {self._minimum_episode_size_mb:g}–'
+                f'{self._maximum_episode_size_mb:g} MB，超出范围须先丢弃'
+            )
+        elif self._minimum_episode_size_bytes > 0:
+            ready_lines.append(
+                f'🛡️  上一段须达到 {self._minimum_episode_size_mb:g} MB'
+            )
+        elif self._maximum_episode_size_bytes > 0:
+            ready_lines.append(
+                f'🛡️  上一段不得超过 {self._maximum_episode_size_mb:g} MB'
+            )
         if self._uploader is not None:
             ready_lines.append(
                 f'☁️  落盘后将自动上传 → {self._upload_config.user}@{self._upload_config.host}'
@@ -251,6 +299,15 @@ class McapRecorderNode(Node):
         except Exception as exc:
             self.get_logger().warn(f'Failed to publish record stop signal: {exc}')
 
+    def _publish_start_blocked_signals(self) -> None:
+        self._publish_record_stop_signal()
+        try:
+            msg = Int32()
+            msg.data = FSM_HOLD_COMMAND
+            self._fsm_command_publisher.publish(msg)
+        except Exception as exc:
+            self.get_logger().warn(f'Failed to command robot HOLD state: {exc}')
+
     def _handle_control_message(self, msg: Any) -> None:
         timestamp_ns = message_timestamp_ns(msg, self.get_clock().now().nanoseconds)
         code = int(getattr(msg, 'data'))
@@ -266,6 +323,101 @@ class McapRecorderNode(Node):
         with self._save_threads_lock:
             self._save_threads = [thread for thread in self._save_threads if thread.is_alive()]
             return len(self._save_threads)
+
+    def _is_episode_still_saving(self, episode: EpisodeInfo) -> bool:
+        thread_name = f'mcap-save-{episode.episode_id}'
+        with self._save_threads_lock:
+            return any(
+                thread.name == thread_name and thread.is_alive()
+                for thread in self._save_threads
+            )
+
+    @staticmethod
+    def _episode_mcap_size_bytes(episode: EpisodeInfo) -> int:
+        if not episode.recording_dir.is_dir():
+            return 0
+        return sum(
+            path.stat().st_size
+            for path in episode.recording_dir.glob('*.mcap')
+            if path.is_file()
+        )
+
+    def _episode_size_violation(self, size_bytes: int) -> Optional[str]:
+        size_mb = size_bytes / BYTES_PER_MB
+        if (
+            self._minimum_episode_size_bytes > 0
+            and size_bytes < self._minimum_episode_size_bytes
+        ):
+            return (
+                f'MCAP 仅 {size_mb:.1f} MB，要求至少 '
+                f'{self._minimum_episode_size_mb:g} MB'
+            )
+        if (
+            self._maximum_episode_size_bytes > 0
+            and size_bytes > self._maximum_episode_size_bytes
+        ):
+            return (
+                f'MCAP 已达 {size_mb:.1f} MB，上限为 '
+                f'{self._maximum_episode_size_mb:g} MB'
+            )
+        return None
+
+    def _previous_episode_allows_start(self) -> bool:
+        episode = self._last_stopped_episode
+        if episode is None or (
+            self._minimum_episode_size_bytes <= 0
+            and self._maximum_episode_size_bytes <= 0
+        ):
+            return True
+
+        if not episode.episode_dir.exists():
+            self.get_logger().warn(
+                f'Previous episode directory no longer exists: {episode.episode_dir}'
+            )
+            self._last_stopped_episode = None
+            return True
+
+        if self._is_episode_still_saving(episode):
+            self._publish_start_blocked_signals()
+            _collector_card(
+                '⏳  暂不能开始下一段',
+                [
+                    f'🆔  上一段 {episode.episode_id} 仍在后台保存',
+                    '🛡️  已命令机器人回到 HOLD，不进入 OCS2 遥操',
+                    '👉  请等待“保存完成”提示后再按 AA + 右摇杆',
+                ],
+                headline_bg=_BG_YELLOW,
+                body_color=_YELLOW,
+            )
+            return False
+
+        try:
+            size_bytes = self._episode_mcap_size_bytes(episode)
+        except OSError as exc:
+            self._publish_start_blocked_signals()
+            self.get_logger().warn(
+                f'Failed to inspect previous episode {episode.episode_id}: {exc}'
+            )
+            self._collector_warn('⚠️  无法检查上一段大小，已阻止开始；请检查数据目录')
+            return False
+        violation = self._episode_size_violation(size_bytes)
+        if violation is None:
+            return True
+
+        self._publish_start_blocked_signals()
+        _collector_card(
+            '🚫  已拦截下一段采集',
+            [
+                f'🆔  上一段 {episode.episode_id}',
+                f'📦  {violation}',
+                '🛡️  已命令机器人回到 HOLD，不进入 OCS2 遥操',
+                '🗑️  请先按控制器 13（或输入 d/discard）删除上一段',
+                '👉  删除成功后，再按 AA + 右摇杆开始下一段',
+            ],
+            headline_bg=_BG_RED,
+            body_color=_RED,
+        )
+        return False
 
     def _commit_last_stopped_episode_for_conversion(self) -> None:
         episode = self._last_stopped_episode
@@ -327,7 +479,10 @@ class McapRecorderNode(Node):
 
         pending = self._pending_save_count()
         try:
-            self._commit_last_stopped_episode_for_conversion()
+            with self._discard_lock:
+                if not self._previous_episode_allows_start():
+                    return
+                self._commit_last_stopped_episode_for_conversion()
             episode = self.session.start(timestamp_ns=timestamp_ns)
             backend = self._new_backend()
             backend.start(
@@ -542,13 +697,30 @@ class McapRecorderNode(Node):
 
     def _show_stop_handoff(self, episode: EpisodeInfo) -> None:
         episode_dir = episode.episode_dir.resolve()
+        next_step_lines = ['👉  保存完成后可以开始下一段']
+        if self._minimum_episode_size_bytes > 0 and self._maximum_episode_size_bytes > 0:
+            next_step_lines = [
+                f'🛡️  MCAP 须在 {self._minimum_episode_size_mb:g}–'
+                f'{self._maximum_episode_size_mb:g} MB 才能开始下一段',
+                '🗑️  若超出范围，请先按 13 删除本段',
+            ]
+        elif self._minimum_episode_size_bytes > 0:
+            next_step_lines = [
+                f'🛡️  MCAP 达到 {self._minimum_episode_size_mb:g} MB 后可开始下一段',
+                '🗑️  若不足要求，请先按 13 删除本段',
+            ]
+        elif self._maximum_episode_size_bytes > 0:
+            next_step_lines = [
+                f'🛡️  MCAP 不超过 {self._maximum_episode_size_mb:g} MB 才能开始下一段',
+                '🗑️  若超过上限，请先按 13 删除本段',
+            ]
         _collector_card(
             '🛑  本段已结束',
             [
                 f'🆔  {episode.episode_id}',
                 f'📁  {episode_dir}',
                 '💾  上一段正在后台保存…',
-                '👉  现在可以直接按 AA+右摇杆 开始下一段',
+                *next_step_lines,
                 '⚠️  不要关闭此终端窗口',
             ],
             headline_bg=_BG_YELLOW,
@@ -565,13 +737,28 @@ class McapRecorderNode(Node):
         episode_dir = episode.episode_dir.resolve()
         recording_dir = episode.recording_dir.resolve()
         mcap_files = sorted(recording_dir.glob('*.mcap')) if recording_dir.is_dir() else []
+        size_bytes = 0
+        size_mb = 0.0
         if mcap_files:
-            size_mb = sum(path.stat().st_size for path in mcap_files) / 1e6
+            size_bytes = sum(path.stat().st_size for path in mcap_files)
+            size_mb = size_bytes / BYTES_PER_MB
             file_hint = f'📦  {mcap_files[0].name}  约 {size_mb:.1f} MB'
         else:
             file_hint = '⚠️  未找到 MCAP 文件，请联系工程师'
 
-        if success:
+        violation = self._episode_size_violation(size_bytes)
+        if success and violation is not None:
+            _collector_card(
+                f'⚠️  数据量不符合要求  ·  {episode.episode_id}',
+                [
+                    f'📦  {violation}',
+                    '🚫  下一段已锁定，AA + 右摇杆不会开始采集',
+                    '🗑️  请按控制器 13（或输入 d/discard）删除本段',
+                ],
+                headline_bg=_BG_RED,
+                body_color=_RED,
+            )
+        elif success:
             _collector_card(
                 f'✅  保存完成  ·  {episode.episode_id}',
                 [

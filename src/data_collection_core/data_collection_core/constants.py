@@ -6,6 +6,8 @@ INFERENCE_PAUSED_CODE = 31
 
 DEFAULT_CONTROL_TOPIC = '/xr/controller_state'
 RECORD_STOP_TOPIC = '/ros2recordstop'
+FSM_COMMAND_TOPIC = '/fsm_command'
+FSM_HOLD_COMMAND = 2
 DEFAULT_PROFILE_PATH = 'config/recording/default_profile.yaml'
 DEFAULT_STORAGE_CONFIG_PATH = 'config/recording/mcap_storage.yaml'
 

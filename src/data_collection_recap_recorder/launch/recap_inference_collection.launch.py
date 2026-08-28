@@ -86,6 +86,8 @@ def generate_launch_description():
     storage_preset_profile = LaunchConfiguration('storage_preset_profile')
     intervention_topic = LaunchConfiguration('intervention_topic')
     intervention_publish_hz = LaunchConfiguration('intervention_publish_hz')
+    minimum_episode_size_mb = LaunchConfiguration('minimum_episode_size_mb')
+    maximum_episode_size_mb = LaunchConfiguration('maximum_episode_size_mb')
 
     inference_params_file = LaunchConfiguration('inference_params_file')
 
@@ -129,6 +131,16 @@ def generate_launch_description():
             description='Publish frequency for the /intervention state.',
         ),
         DeclareLaunchArgument(
+            'minimum_episode_size_mb',
+            default_value='100.0',
+            description='Minimum previous MCAP size required before starting the next episode.',
+        ),
+        DeclareLaunchArgument(
+            'maximum_episode_size_mb',
+            default_value='145.0',
+            description='Maximum previous MCAP size allowed before starting the next episode.',
+        ),
+        DeclareLaunchArgument(
             'run_inference',
             default_value='true',
             description='Start the no-subtask inference runtime together with recap recording.',
@@ -164,6 +176,8 @@ def generate_launch_description():
                 'storage_preset_profile': storage_preset_profile,
                 'intervention_topic': intervention_topic,
                 'intervention_publish_hz': intervention_publish_hz,
+                'minimum_episode_size_mb': minimum_episode_size_mb,
+                'maximum_episode_size_mb': maximum_episode_size_mb,
             }],
         ),
         OpaqueFunction(function=_make_inference_process),

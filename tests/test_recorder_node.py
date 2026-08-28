@@ -1,5 +1,5 @@
 from data_collection_recorder.recorder_node import McapRecorderNode
-from data_collection_core.constants import DISCARD_LAST_EPISODE_CODE
+from data_collection_core.constants import DISCARD_LAST_EPISODE_CODE, FSM_HOLD_COMMAND
 from data_collection_core.lerobot_conversion_config import LeRobotConversionConfig
 from data_collection_core.lerobot_converter import LeRobotEpisodeConverter
 from data_collection_core.episode_uploader import EpisodeUploader
@@ -44,6 +44,160 @@ def test_record_stop_publish_failure_is_non_fatal():
     node.get_logger = lambda: _Logger()
 
     node._publish_record_stop_signal()
+
+
+def test_start_blocked_publishes_record_stop_and_robot_hold():
+    class _Publisher:
+        def __init__(self):
+            self.messages = []
+
+        def publish(self, msg):
+            self.messages.append(msg)
+
+    node = McapRecorderNode.__new__(McapRecorderNode)
+    node._record_stop_publisher = _Publisher()
+    node._fsm_command_publisher = _Publisher()
+    node.get_logger = lambda: _Logger()
+
+    node._publish_start_blocked_signals()
+
+    assert len(node._record_stop_publisher.messages) == 1
+    assert [msg.data for msg in node._fsm_command_publisher.messages] == [FSM_HOLD_COMMAND]
+
+
+def _make_stopped_episode(tmp_path, episode_id="episode_size_check"):
+    from data_collection_core.session import EpisodeInfo
+
+    episode_dir = tmp_path / episode_id
+    recording_dir = episode_dir / "recording"
+    recording_dir.mkdir(parents=True)
+    return EpisodeInfo(
+        episode_id=episode_id,
+        episode_dir=episode_dir,
+        recording_dir=recording_dir,
+    )
+
+
+def _make_size_check_node(
+    episode,
+    minimum_size_bytes,
+    maximum_size_bytes=1_000_000_000,
+):
+    node = McapRecorderNode.__new__(McapRecorderNode)
+    node._last_stopped_episode = episode
+    node._minimum_episode_size_bytes = minimum_size_bytes
+    node._minimum_episode_size_mb = minimum_size_bytes / 1_000_000
+    node._maximum_episode_size_bytes = maximum_size_bytes
+    node._maximum_episode_size_mb = maximum_size_bytes / 1_000_000
+    node._save_threads = []
+    node._save_threads_lock = __import__("threading").Lock()
+    node._discard_lock = __import__("threading").Lock()
+    node.get_logger = lambda: _Logger()
+    return node
+
+
+def test_small_previous_episode_blocks_start_and_publishes_stop(tmp_path):
+    episode = _make_stopped_episode(tmp_path)
+    (episode.recording_dir / "recording_0.mcap").write_bytes(b"small")
+    node = _make_size_check_node(episode, minimum_size_bytes=10)
+    stop_signals = []
+    node._publish_start_blocked_signals = lambda: stop_signals.append("stop")
+
+    assert node._previous_episode_allows_start() is False
+    assert stop_signals == ["stop"]
+    assert node._last_stopped_episode == episode
+
+
+def test_small_previous_episode_does_not_create_next_episode(tmp_path):
+    class _StoppedSession:
+        is_recording = False
+
+        def __init__(self):
+            self.start_calls = []
+
+        def start(self, timestamp_ns):
+            self.start_calls.append(timestamp_ns)
+
+    episode = _make_stopped_episode(tmp_path)
+    (episode.recording_dir / "recording_0.mcap").write_bytes(b"small")
+    node = _make_size_check_node(episode, minimum_size_bytes=10)
+    node.session = _StoppedSession()
+    node._publish_start_blocked_signals = lambda: None
+
+    node._start_recording(timestamp_ns=123)
+
+    assert node.session.start_calls == []
+
+
+def test_previous_episode_at_minimum_size_allows_start(tmp_path):
+    episode = _make_stopped_episode(tmp_path)
+    (episode.recording_dir / "recording_0.mcap").write_bytes(b"large-enough")
+    node = _make_size_check_node(episode, minimum_size_bytes=12)
+    node._publish_start_blocked_signals = lambda: None
+
+    assert node._previous_episode_allows_start() is True
+
+
+def test_previous_episode_over_maximum_size_blocks_start(tmp_path):
+    episode = _make_stopped_episode(tmp_path)
+    (episode.recording_dir / "recording_0.mcap").write_bytes(b"too-large")
+    node = _make_size_check_node(
+        episode,
+        minimum_size_bytes=1,
+        maximum_size_bytes=8,
+    )
+    stop_signals = []
+    node._publish_start_blocked_signals = lambda: stop_signals.append("stop")
+
+    assert node._previous_episode_allows_start() is False
+    assert stop_signals == ["stop"]
+    assert node._last_stopped_episode == episode
+
+
+def test_previous_episode_at_maximum_size_allows_start(tmp_path):
+    episode = _make_stopped_episode(tmp_path)
+    (episode.recording_dir / "recording_0.mcap").write_bytes(b"max-size")
+    node = _make_size_check_node(
+        episode,
+        minimum_size_bytes=1,
+        maximum_size_bytes=8,
+    )
+    node._publish_start_blocked_signals = lambda: None
+
+    assert node._previous_episode_allows_start() is True
+
+
+def test_previous_episode_still_saving_blocks_start(tmp_path):
+    class _SavingThread:
+        name = "mcap-save-episode_size_check"
+
+        def is_alive(self):
+            return True
+
+    episode = _make_stopped_episode(tmp_path)
+    node = _make_size_check_node(episode, minimum_size_bytes=10)
+    node._save_threads = [_SavingThread()]
+    stop_signals = []
+    node._publish_start_blocked_signals = lambda: stop_signals.append("stop")
+
+    assert node._previous_episode_allows_start() is False
+    assert stop_signals == ["stop"]
+
+
+def test_deleted_previous_episode_allows_start(tmp_path):
+    from data_collection_core.session import EpisodeInfo
+
+    episode_dir = tmp_path / "already_deleted"
+    episode = EpisodeInfo(
+        episode_id=episode_dir.name,
+        episode_dir=episode_dir,
+        recording_dir=episode_dir / "recording",
+    )
+    node = _make_size_check_node(episode, minimum_size_bytes=10)
+    node._publish_start_blocked_signals = lambda: None
+
+    assert node._previous_episode_allows_start() is True
+    assert node._last_stopped_episode is None
 
 
 def test_uploader_checks_pending_uploads_on_startup(tmp_path):
