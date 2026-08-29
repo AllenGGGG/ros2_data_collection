@@ -85,6 +85,7 @@ def _make_size_check_node(
 ):
     node = McapRecorderNode.__new__(McapRecorderNode)
     node._last_stopped_episode = episode
+    node._size_override_episode_id = None
     node._episode_size_limit_enabled = True
     node._minimum_episode_size_bytes = minimum_size_bytes
     node._minimum_episode_size_mb = minimum_size_bytes / 1_000_000
@@ -182,6 +183,53 @@ def test_disabled_size_limit_allows_out_of_range_episode(tmp_path):
 
     assert node._previous_episode_allows_start() is True
     assert stop_signals == []
+
+
+def test_enter_confirms_out_of_range_episode_and_allows_start(tmp_path):
+    episode = _make_stopped_episode(tmp_path)
+    (episode.recording_dir / "recording_0.mcap").write_bytes(b"small")
+    node = _make_size_check_node(
+        episode,
+        minimum_size_bytes=10,
+        maximum_size_bytes=20,
+    )
+    node._collector_warn = lambda *_args, **_kwargs: None
+
+    node._handle_size_override_command()
+
+    assert node._size_override_episode_id == episode.episode_id
+    assert node._previous_episode_allows_start() is True
+
+
+def test_size_override_is_cleared_when_episode_is_committed(tmp_path):
+    episode = _make_stopped_episode(tmp_path)
+    node = _make_size_check_node(episode, minimum_size_bytes=10)
+    node._size_override_episode_id = episode.episode_id
+    node._lerobot_converter = None
+
+    node._commit_last_stopped_episode_for_conversion()
+
+    assert node._last_stopped_episode is None
+    assert node._size_override_episode_id is None
+
+
+def test_enter_does_not_confirm_episode_while_saving(tmp_path):
+    class _SavingThread:
+        name = "mcap-save-episode_size_check"
+
+        def is_alive(self):
+            return True
+
+    episode = _make_stopped_episode(tmp_path)
+    node = _make_size_check_node(episode, minimum_size_bytes=10)
+    node._save_threads = [_SavingThread()]
+    warnings = []
+    node._collector_warn = lambda message: warnings.append(message)
+
+    node._handle_size_override_command()
+
+    assert node._size_override_episode_id is None
+    assert len(warnings) == 1
 
 
 def test_previous_episode_still_saving_blocks_start(tmp_path):

@@ -152,6 +152,7 @@ class McapRecorderNode(Node):
         self._convert_after_save_episode_ids: set[str] = set()
         self._episode_waiting_for_next_collection: Optional[EpisodeInfo] = None
         self._last_stopped_episode: Optional[EpisodeInfo] = None
+        self._size_override_episode_id: Optional[str] = None
         # stdin and ROS callbacks run on different threads. Serialize discard
         # requests so CLI and controller input cannot delete the same episode twice.
         self._discard_lock = threading.Lock()
@@ -173,13 +174,14 @@ class McapRecorderNode(Node):
             '🎮 开始采集 → AA + 右摇杆（进入 OCS2 遥操）',
             '🛑 结束采集 → 控制器 14',
             '🗑️  丢弃上一段 → 按控制器 13，或终端输入 d/discard 回车',
+            '✅  确认保留超限数据 → 本终端直接按 Enter',
         ]
         if not self._episode_size_limit_enabled:
             ready_lines.append('🔓  数据大小限制已关闭')
         elif self._minimum_episode_size_bytes > 0 and self._maximum_episode_size_bytes > 0:
             ready_lines.append(
                 f'🛡️  上一段须在 {self._minimum_episode_size_mb:g}–'
-                f'{self._maximum_episode_size_mb:g} MB，超出范围须先丢弃'
+                f'{self._maximum_episode_size_mb:g} MB，超出范围可删除或按 Enter 保留'
             )
         elif self._minimum_episode_size_bytes > 0:
             ready_lines.append(
@@ -399,6 +401,9 @@ class McapRecorderNode(Node):
             )
             return False
 
+        if self._size_override_episode_id == episode.episode_id:
+            return True
+
         try:
             size_bytes = self._episode_mcap_size_bytes(episode)
         except OSError as exc:
@@ -420,7 +425,8 @@ class McapRecorderNode(Node):
                 f'📦  {violation}',
                 '🛡️  已命令机器人回到 HOLD，不进入 OCS2 遥操',
                 '🗑️  请先按控制器 13（或输入 d/discard）删除上一段',
-                '👉  删除成功后，再按 AA + 右摇杆开始下一段',
+                '✅  若确认数据没问题，也可在本终端直接按 Enter 保留',
+                '👉  删除或确认保留后，再按 AA + 右摇杆开始下一段',
             ],
             headline_bg=_BG_RED,
             body_color=_RED,
@@ -432,6 +438,7 @@ class McapRecorderNode(Node):
         if episode is None:
             return
         self._last_stopped_episode = None
+        self._size_override_episode_id = None
         if self._lerobot_converter is None:
             return
         self._episode_waiting_for_next_collection = episode
@@ -529,6 +536,7 @@ class McapRecorderNode(Node):
 
             record_process = backend.detach_process() if backend is not None else None
             self._last_stopped_episode = episode
+            self._size_override_episode_id = None
             self._show_stop_handoff(episode)
             self._confirm_previous_episode_for_conversion()
 
@@ -712,7 +720,7 @@ class McapRecorderNode(Node):
             next_step_lines = [
                 f'🛡️  MCAP 须在 {self._minimum_episode_size_mb:g}–'
                 f'{self._maximum_episode_size_mb:g} MB 才能开始下一段',
-                '🗑️  若超出范围，请先按 13 删除本段',
+                '🗑️  若超出范围，可按 13 删除，或按 Enter 确认保留',
             ]
         elif self._minimum_episode_size_bytes > 0:
             next_step_lines = [
@@ -764,6 +772,7 @@ class McapRecorderNode(Node):
                     f'📦  {violation}',
                     '🚫  下一段已锁定，AA + 右摇杆不会开始采集',
                     '🗑️  请按控制器 13（或输入 d/discard）删除本段',
+                    '✅  若确认数据正常，可直接按 Enter 保留本段',
                 ],
                 headline_bg=_BG_RED,
                 body_color=_RED,
@@ -813,6 +822,47 @@ class McapRecorderNode(Node):
                 command = line.strip().lower()
                 if command in ('d', 'discard'):
                     self._handle_discard_command()
+                elif command in ('', 'keep', 'confirm'):
+                    self._handle_size_override_command()
+
+    def _handle_size_override_command(self) -> None:
+        with self._discard_lock:
+            episode = self._last_stopped_episode
+            if episode is None:
+                self._collector_warn('⚠️  当前没有等待确认保留的数据段')
+                return
+
+            if self._is_episode_still_saving(episode):
+                self._collector_warn(
+                    f'⏳  {episode.episode_id} 仍在后台保存，请等保存完成后再按 Enter'
+                )
+                return
+
+            try:
+                size_bytes = self._episode_mcap_size_bytes(episode)
+            except OSError as exc:
+                self.get_logger().warn(
+                    f'Failed to inspect previous episode {episode.episode_id}: {exc}'
+                )
+                self._collector_warn('⚠️  无法检查上一段大小，暂不能确认保留')
+                return
+
+            violation = self._episode_size_violation(size_bytes)
+            if violation is None:
+                self._collector_warn('ℹ️  上一段大小符合要求，无需人工确认')
+                return
+
+            self._size_override_episode_id = episode.episode_id
+            _collector_card(
+                f'✅  已确认保留  ·  {episode.episode_id}',
+                [
+                    f'📦  {violation}',
+                    '💾  本段数据继续保留，不会删除',
+                    '👉  现在可按 AA + 右摇杆开始下一段采集',
+                ],
+                headline_bg=_BG_GREEN,
+                body_color=_GREEN,
+            )
 
     def _handle_discard_command(self) -> None:
         with self._discard_lock:
@@ -834,6 +884,7 @@ class McapRecorderNode(Node):
                 return
 
             self._last_stopped_episode = None
+            self._size_override_episode_id = None
             self._episode_waiting_for_next_collection = None
             self._convert_after_save_episode_ids.discard(episode.episode_id)
             self._discard_episode(episode)

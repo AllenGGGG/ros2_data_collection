@@ -31,19 +31,28 @@ MCAP recorder 由 `/xr/controller_state` 控制：
 按控制器 `13`，或在运行 `mcap_recorder` 的终端里输入 `d`/`discard` 并回车，均可丢弃**刚结束的那一段**（默认仍然是保存，只有主动操作才会删除）：
 
 - 删除该段本地目录；若已启用自动上传，同时尝试删除远端副本（已上传/上传中都会尝试清理，失败不影响后续采集）。
-- 默认要求上一段保存后的 MCAP 在 **108–145 MB** 范围内（包含边界）。若小于 108 MB 或大于 145 MB 且尚未删除，按 `4` 不会开始下一段；recorder 会同时发布 `/ros2recordstop` 和 `/fsm_command=2`，命令机器人回到 `HOLD`、退出/取消 OCS2 遥操。终端会提示先按 `13`（或输入 `d/discard`）删除该段。
+- 默认要求上一段保存后的 MCAP 在 **108–145 MB** 范围内（包含边界）。若小于 108 MB 或大于 145 MB 且尚未处理，按 `4` 不会开始下一段；recorder 会同时发布 `/ros2recordstop` 和 `/fsm_command=2`，命令机器人回到 `HOLD`、退出/取消 OCS2 遥操。终端会提示按 `13` 删除该段，或按 Enter 人工确认保留。
 - 上一段仍在后台保存时，按 `4` 也会被暂时拦截，避免文件尚未写完就误判大小；看到“保存完成”后可重试。
 - 位于 108–145 MB 范围内时可直接开始下一段；一旦下一段开始，上一段就不能再撤销。上下限可通过 `minimum_episode_size_mb:=108.0` 和 `maximum_episode_size_mb:=145.0` 调整，设为 `0` 可分别关闭对应检查。
 - 控制器和终端共用同一删除入口并进行并发保护；同时操作不会重复删除。
 - 若该段还在后台保存中，会提示稍后再试；若没有可丢弃的段，会提示当前无操作对象。
 
-通过 `./quick.start` 启动普通 MCAP 或 RECAP 数采时，终端会在启动前询问本次是否开启 `108–145 MB` 限制。默认选择开启；选择关闭后，本次运行不会校验上一段大小。无人值守启动可预设：
+通过 `./quick.start` 启动普通 MCAP 或 RECAP 数采时，终端会在启动前提供三种模式：使用默认 `108–145 MB`、自行输入上下限、完全关闭限制。自定义模式会检查输入必须为非负数字，并要求上限不小于下限。
+
+某段保存完成但超出所选范围时，可以按 `13` 删除；若人工检查确认数据没有问题，也可以在 recorder 终端直接按 **Enter**（或输入 `keep`/`confirm`）确认保留。确认后数据不会被删除，再按 AA + 右摇杆即可正常开始下一段。保存尚未完成时 Enter 不会放行。
+
+无人值守启动可预设：
 
 ```bash
 QUICK_START_EPISODE_SIZE_LIMIT=false ./quick.start 2
+
+QUICK_START_EPISODE_SIZE_LIMIT=true \
+QUICK_START_MINIMUM_EPISODE_SIZE_MB=120 \
+QUICK_START_MAXIMUM_EPISODE_SIZE_MB=180 \
+./quick.start 2
 ```
 
-也可直接使用 ROS 参数 `episode_size_limit_enabled:=true/false`，显式传参时 `quick.start` 不再询问。
+也可直接使用 ROS 参数 `episode_size_limit_enabled:=true/false`、`minimum_episode_size_mb:=...` 和 `maximum_episode_size_mb:=...`。显式传入任一大小限制参数时，`quick.start` 不再询问。
 
 LeRobot 自动转换默认开启。程序启动时不会处理历史数据；刚结束的段先保留丢弃窗口，按 `4`（AA + 右摇杆）开始下一段后也不会立即转换，等下一段真正结束后，上一段才会加入转换队列。被 `d/discard` 删除的段不会转换。
 

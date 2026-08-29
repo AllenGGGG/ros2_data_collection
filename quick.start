@@ -22,8 +22,9 @@ usage() {
 如需跳过编译: QUICK_START_SKIP_BUILD=1 ./quick.start <序号>
 LeRobot 自动转换可在启动普通 MCAP 数采时交互选择，也可用
 QUICK_START_LEROBOT_CONVERSION=true/false/config 预设。
-MCAP 数据大小限制可在启动时交互选择，也可用
-QUICK_START_EPISODE_SIZE_LIMIT=true/false 预设（默认开启 108–145 MB）。
+MCAP 数据大小限制可在启动时选择默认范围、自定义范围或关闭，也可用
+QUICK_START_EPISODE_SIZE_LIMIT=true/false 预设。自定义上下限可用
+QUICK_START_MINIMUM_EPISODE_SIZE_MB / QUICK_START_MAXIMUM_EPISODE_SIZE_MB 预设。
 示例:
   ./quick.start 2 output_dir:=/tmp/raw_datasets_mcap
   ./quick.start 2 lerobot_conversion_enabled:=false
@@ -98,12 +99,19 @@ run_ros_package() {
 run_recap_recorder() {
   run_ros_package data_collection_core data_collection_recorder data_collection_recap_recorder
   if ! has_episode_size_limit_arg "$@"; then
-    local size_limit_mode
-    size_limit_mode="$(choose_episode_size_limit_mode)"
+    local size_limit_mode minimum_size_mb maximum_size_mb
+    read -r size_limit_mode minimum_size_mb maximum_size_mb \
+      <<< "$(choose_episode_size_limit_config)"
     if has_ros_args_marker "$@"; then
-      set -- "$@" "-p" "episode_size_limit_enabled:=${size_limit_mode}"
+      set -- "$@" \
+        "-p" "episode_size_limit_enabled:=${size_limit_mode}" \
+        "-p" "minimum_episode_size_mb:=${minimum_size_mb}" \
+        "-p" "maximum_episode_size_mb:=${maximum_size_mb}"
     else
-      set -- "--ros-args" "-p" "episode_size_limit_enabled:=${size_limit_mode}" "$@"
+      set -- "--ros-args" \
+        "-p" "episode_size_limit_enabled:=${size_limit_mode}" \
+        "-p" "minimum_episode_size_mb:=${minimum_size_mb}" \
+        "-p" "maximum_episode_size_mb:=${maximum_size_mb}" "$@"
     fi
   fi
   exec ros2 run data_collection_recap_recorder recap_mcap_recorder "$@"
@@ -113,7 +121,9 @@ has_episode_size_limit_arg() {
   local arg
   for arg in "$@"; do
     case "${arg}" in
-      episode_size_limit_enabled:=*) return 0 ;;
+      episode_size_limit_enabled:=*|minimum_episode_size_mb:=*|maximum_episode_size_mb:=*)
+        return 0
+        ;;
     esac
   done
   return 1
@@ -129,33 +139,97 @@ has_ros_args_marker() {
   return 1
 }
 
-choose_episode_size_limit_mode() {
+is_nonnegative_number() {
+  [[ "$1" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]
+}
+
+is_valid_size_range() {
+  awk -v minimum="$1" -v maximum="$2" \
+    'BEGIN { exit !(minimum >= 0 && maximum >= minimum) }'
+}
+
+normalize_decimal() {
+  if [[ "$1" == *.* ]]; then
+    printf '%s' "$1"
+  else
+    printf '%s.0' "$1"
+  fi
+}
+
+choose_episode_size_limit_config() {
+  local default_minimum_raw="${QUICK_START_MINIMUM_EPISODE_SIZE_MB:-108.0}"
+  local default_maximum_raw="${QUICK_START_MAXIMUM_EPISODE_SIZE_MB:-145.0}"
+
+  if ! is_nonnegative_number "${default_minimum_raw}" \
+    || ! is_nonnegative_number "${default_maximum_raw}" \
+    || ! is_valid_size_range "${default_minimum_raw}" "${default_maximum_raw}"; then
+    echo "错误: 环境变量中的数据大小上下限无效。" >&2
+    exit 2
+  fi
+  local default_minimum default_maximum
+  default_minimum="$(normalize_decimal "${default_minimum_raw}")"
+  default_maximum="$(normalize_decimal "${default_maximum_raw}")"
+
   if [[ -n "${QUICK_START_EPISODE_SIZE_LIMIT:-}" ]]; then
     case "${QUICK_START_EPISODE_SIZE_LIMIT}" in
-      0|off|OFF|false|FALSE|no|NO) printf 'false' ;;
-      *) printf 'true' ;;
+      0|off|OFF|false|FALSE|no|NO)
+        printf 'false %s %s' "${default_minimum}" "${default_maximum}"
+        ;;
+      *)
+        printf 'true %s %s' "${default_minimum}" "${default_maximum}"
+        ;;
     esac
     return
   fi
 
   if [[ ! -t 0 ]]; then
-    printf 'true'
+    printf 'true %s %s' "${default_minimum}" "${default_maximum}"
     return
   fi
 
   cat >&2 <<EOF
 
 MCAP 数据大小限制（本次启动）:
-  1  开启：仅允许 108–145 MB（默认）
-  2  关闭：不检查上一段数据大小
+  1  使用默认范围：108–145 MB（默认）
+  2  自定义上下限
+  3  关闭：不检查上一段数据大小
 
-请选择 [1/2，默认 1]:
+请选择 [1/2/3，默认 1]:
 EOF
   local choice
   read -r choice
   case "${choice}" in
-    2|off|OFF|false|FALSE|no|NO) printf 'false' ;;
-    *) printf 'true' ;;
+    2)
+      local minimum_size_mb maximum_size_mb
+      while true; do
+        printf '请输入下限 MB（默认 108）: ' >&2
+        read -r minimum_size_mb
+        minimum_size_mb="${minimum_size_mb:-108.0}"
+        printf '请输入上限 MB（默认 145）: ' >&2
+        read -r maximum_size_mb
+        maximum_size_mb="${maximum_size_mb:-145.0}"
+
+        if ! is_nonnegative_number "${minimum_size_mb}" \
+          || ! is_nonnegative_number "${maximum_size_mb}"; then
+          echo "输入无效：上下限必须是大于或等于 0 的数字，请重新输入。" >&2
+          continue
+        fi
+        if ! is_valid_size_range "${minimum_size_mb}" "${maximum_size_mb}"; then
+          echo "输入无效：上限不能小于下限，请重新输入。" >&2
+          continue
+        fi
+        minimum_size_mb="$(normalize_decimal "${minimum_size_mb}")"
+        maximum_size_mb="$(normalize_decimal "${maximum_size_mb}")"
+        printf 'true %s %s' "${minimum_size_mb}" "${maximum_size_mb}"
+        return
+      done
+      ;;
+    3|off|OFF|false|FALSE|no|NO)
+      printf 'false %s %s' "${default_minimum}" "${default_maximum}"
+      ;;
+    *)
+      printf 'true %s %s' "${default_minimum}" "${default_maximum}"
+      ;;
   esac
 }
 
@@ -201,9 +275,13 @@ EOF
 run_mcap_recorder() {
   run_ros_package data_collection_core data_collection_recorder
   if ! has_episode_size_limit_arg "$@"; then
-    local size_limit_mode
-    size_limit_mode="$(choose_episode_size_limit_mode)"
-    set -- "episode_size_limit_enabled:=${size_limit_mode}" "$@"
+    local size_limit_mode minimum_size_mb maximum_size_mb
+    read -r size_limit_mode minimum_size_mb maximum_size_mb \
+      <<< "$(choose_episode_size_limit_config)"
+    set -- \
+      "episode_size_limit_enabled:=${size_limit_mode}" \
+      "minimum_episode_size_mb:=${minimum_size_mb}" \
+      "maximum_episode_size_mb:=${maximum_size_mb}" "$@"
   fi
   if ! has_lerobot_conversion_arg "$@"; then
     local conversion_mode
@@ -223,9 +301,13 @@ run_multi_subscriber() {
 run_recap_full_launch() {
   run_ros_package data_collection_core data_collection_recorder data_collection_recap_recorder
   if ! has_episode_size_limit_arg "$@"; then
-    local size_limit_mode
-    size_limit_mode="$(choose_episode_size_limit_mode)"
-    set -- "episode_size_limit_enabled:=${size_limit_mode}" "$@"
+    local size_limit_mode minimum_size_mb maximum_size_mb
+    read -r size_limit_mode minimum_size_mb maximum_size_mb \
+      <<< "$(choose_episode_size_limit_config)"
+    set -- \
+      "episode_size_limit_enabled:=${size_limit_mode}" \
+      "minimum_episode_size_mb:=${minimum_size_mb}" \
+      "maximum_episode_size_mb:=${maximum_size_mb}" "$@"
   fi
   exec ros2 launch data_collection_recap_recorder recap_inference_collection.launch.py "$@"
 }
